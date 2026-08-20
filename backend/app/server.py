@@ -7,6 +7,7 @@ psycopg3 异步（checkpointer / SQLAlchemy）在 Windows 上要求 Selector 事
 
 Linux（生产容器）返回 None → uvicorn 默认行为，不受影响。
 """
+
 import asyncio
 import sys
 

@@ -17,6 +17,7 @@ from sqlalchemy.exc import DBAPIError, InterfaceError
 
 from app.agent.checkpoint import close_checkpointer, get_checkpointer
 from app.api.agents import router as agents_router
+from app.api.eval import router as eval_router
 from app.api.health import router as health_router
 from app.api.keys import router as keys_router
 from app.api.mcp import router as mcp_router
@@ -71,6 +72,7 @@ app.include_router(mcp_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
 app.include_router(keys_router, prefix="/api")
+app.include_router(eval_router, prefix="/api")
 
 
 @app.exception_handler(AppError)
