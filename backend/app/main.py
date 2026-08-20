@@ -1,0 +1,59 @@
+"""FastAPI 入口。
+
+启动顺序（lifespan）：
+1. 日志初始化
+2. （M2）MCP 客户端会话池；LangSmith 环境配置
+3. （M3）LangGraph Postgres Checkpointer setup
+
+迁移由部署脚本执行：alembic upgrade head（容器 entrypoint / 本地手动）。
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.api.agents import router as agents_router
+from app.api.health import router as health_router
+from app.api.runs import router as runs_router
+from app.api.threads import router as threads_router
+from app.core.config import get_settings
+from app.core.errors import AppError
+from app.core.logging import get_logger, setup_logging
+from app.core.tracing import configure_tracing
+
+settings = get_settings()
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_logging()
+    configure_tracing(settings)
+    # 日志不打印凭据，只打印主机部分
+    logger.info("startup", database_host=settings.database_url.split("@")[-1])
+    yield
+    logger.info("shutdown")
+
+
+app = FastAPI(title="MCP Agent Platform", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(health_router, prefix="/api")
+app.include_router(agents_router, prefix="/api")
+app.include_router(threads_router, prefix="/api")
+app.include_router(runs_router, prefix="/api")
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    """统一错误信封（API 文档契约，见 docs/development-framework.md §7）。"""
+    return JSONResponse(status_code=exc.status_code, content=exc.to_envelope())

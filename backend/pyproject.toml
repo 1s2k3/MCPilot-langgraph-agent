@@ -1,0 +1,56 @@
+[project]
+name = "agent-platform-backend"
+version = "0.1.0"
+description = "MCP Agent Platform backend: FastAPI + LangGraph agent runtime"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sse-starlette>=2.1",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "psycopg[binary]>=3.2.3",
+    "alembic>=1.14",
+    "pgvector>=0.3.6",
+    "langgraph>=0.3",
+    "langgraph-checkpoint-postgres>=2.0.10",
+    "langchain-core>=0.3.40",
+    "langchain-anthropic>=0.3.10",
+    "langchain-mcp-adapters>=0.1.0",
+    "mcp>=1.9.0",
+    "cryptography>=44.0",
+    "structlog>=25.1",
+    "fastembed>=0.5.1",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: 需要真实 PostgreSQL / MCP demo server（docker compose 或 CI 服务）",
+    "live_llm: 需要真实 Anthropic API Key，默认跳过",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["B008"]  # FastAPI Depends 参数默认值
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
