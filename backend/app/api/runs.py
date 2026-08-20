@@ -1,9 +1,11 @@
-"""运行（Run）API：创建 / 摘要 / SSE 流 / 事件回放 / 取消。"""
+"""运行（Run）API：创建 / 摘要 / SSE 流 / 事件回放 / 取消 / HITL 决议。"""
 
 import json
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -175,3 +177,30 @@ async def cancel_run(
     if not manager.cancel(run_id):
         raise AppError("cancel_failed", "运行已结束或不存在于当前进程", status_code=409)
     return {"cancelled": True}
+
+
+class RunResumeBody(BaseModel):
+    """HITL 决议（§5.9）：对 interrupt 挂起的工具审批。"""
+
+    action: Literal["approve", "deny"]
+    feedback: str = ""
+    session_wide: bool = False  # 本次会话内不再询问该工具
+
+
+@router.post("/{thread_id}/runs/{run_id}/resume")
+async def resume_run(
+    thread_id: uuid.UUID,
+    run_id: uuid.UUID,
+    body: RunResumeBody,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """提交人工决议，唤醒挂起的运行（LangGraph Command(resume=...)）。"""
+    run = await session.get(Run, run_id)
+    if run is None or run.thread_id != thread_id:
+        raise not_found("Run", str(run_id))
+    if run.status != "interrupted":
+        raise AppError("not_interrupted", "运行未处于等待审批状态", status_code=409)
+    decision = {"action": body.action, "feedback": body.feedback, "session_wide": body.session_wide}
+    if not manager.resume(run_id, decision):
+        raise AppError("resume_failed", "无法恢复（当前进程内没有等待中的审批）", status_code=409)
+    return {"resumed": True}

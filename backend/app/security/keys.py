@@ -4,10 +4,18 @@
 - API 响应永远只返回掩码，写后不可读
 """
 
+from datetime import UTC, datetime
+
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.logging import get_logger
+from app.db.models import ApiKey
+from app.db.session import SessionLocal
+
+logger = get_logger(__name__)
 
 
 def _fernet() -> Fernet:
@@ -39,3 +47,36 @@ def mask_key(secret: str, keep: int = 4) -> str:
     if len(secret) <= keep + 4:
         return "***"
     return f"{secret[:keep]}…{secret[-4:]}"
+
+
+async def get_provider_key(provider: str) -> str | None:
+    """读取 provider 的最新可用密钥（解密 + 刷新 last_used_at）；无密钥/解密失败 → None。"""
+    async with SessionLocal() as session:
+        row = (
+            (
+                await session.execute(
+                    select(ApiKey)
+                    .where(ApiKey.provider == provider)
+                    .order_by(ApiKey.created_at.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+    if row is None:
+        return None
+    try:
+        plain = decrypt_secret(row.key_ciphertext)
+    except AppError:
+        logger.warning("provider_key_decrypt_failed", provider=provider, key_id=str(row.id))
+        return None
+    async with SessionLocal() as session:
+        db_row = await session.get(ApiKey, row.id)
+        if db_row is not None:
+            db_row.last_used_at = datetime.now(UTC)
+            await session.commit()
+    return plain
+
+
+__all__ = ["encrypt_secret", "decrypt_secret", "mask_key", "get_provider_key"]

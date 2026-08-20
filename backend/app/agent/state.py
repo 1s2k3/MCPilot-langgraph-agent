@@ -22,3 +22,4 @@ class AgentState(TypedDict, total=False):
     current_step_index: int  # 当前步骤
     reflection_log: list[dict]  # 反思记录（UI 可视化 + 评估指标数据源）
     next_node: str  # reflector 路由信号（显式控制流）
+    tool_approvals: dict[str, str]  # 会话级工具授权（{"tool": "allow"}，随 checkpoint 持久化）

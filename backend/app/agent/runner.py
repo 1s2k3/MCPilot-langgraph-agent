@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from sqlalchemy import func, select
 
 from app.agent.checkpoint import get_checkpointer
@@ -29,6 +30,7 @@ from app.llm.scripted import (
     demo_responder,
 )
 from app.memory.extractor import store_extracted_memories
+from app.security.keys import get_provider_key
 from app.tools.mcp_client import mcp_manager
 from app.tools.registry import build_registry
 
@@ -38,25 +40,36 @@ _TERMINAL = ("completed", "failed", "cancelled")
 _LLM_NODES = ("planner", "executor", "reflector", "finalizer", "memory_extractor", "judge")
 
 
-def build_node_llms(agent_row: Agent) -> dict[str, object]:
-    """按节点构建 LLM 实例。scripted 模式每个节点独立实例（避免脚本队列串扰）。"""
+async def build_node_llms(agent_row: Agent) -> dict[str, object]:
+    """按节点构建 LLM 实例。scripted 模式每个节点独立实例（避免脚本队列串扰）。
+
+    API Key 解析顺序（§9）：环境变量 → DB 密钥（api_keys 表，provider=anthropic）→ 降级 scripted。
+    """
     s = get_settings()
-    if s.scripted_llm or s.anthropic_api_key is None:
-        if not s.scripted_llm:
-            logger.warning("no_anthropic_key_using_scripted")
-        return {
-            "executor": ScriptedChatModel(responder=demo_responder),
-            "planner": ScriptedChatModel(responder=demo_plan_responder),
-            "reflector": ScriptedChatModel(responder=demo_reflect_responder),
-            "finalizer": ScriptedChatModel(responder=demo_finalizer_responder),
-            "memory_extractor": ScriptedChatModel(),
-            "judge": ScriptedChatModel(),
-        }
+    if s.scripted_llm:
+        return _scripted_llms()
+    api_key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
+    if api_key is None:
+        api_key = await get_provider_key("anthropic")
+    if api_key is None:
+        logger.warning("no_anthropic_key_using_scripted")
+        return _scripted_llms()
     return {
         node: build_anthropic_model(
-            resolve_llm_config(node, (agent_row.node_models or {}).get(node))
+            resolve_llm_config(node, (agent_row.node_models or {}).get(node)), api_key=api_key
         )
         for node in _LLM_NODES
+    }
+
+
+def _scripted_llms() -> dict[str, object]:
+    return {
+        "executor": ScriptedChatModel(responder=demo_responder),
+        "planner": ScriptedChatModel(responder=demo_plan_responder),
+        "reflector": ScriptedChatModel(responder=demo_reflect_responder),
+        "finalizer": ScriptedChatModel(responder=demo_finalizer_responder),
+        "memory_extractor": ScriptedChatModel(),
+        "judge": ScriptedChatModel(),
     }
 
 
@@ -142,7 +155,7 @@ async def execute_run(
     registry = build_registry(thread_id)
     for name, meta in mcp_manager.tools().items():  # 注入 MCP 工具（带 server 前缀）
         registry.register(name, meta)
-    llms = build_node_llms(agent)
+    llms = await build_node_llms(agent)
     checkpointer = await get_checkpointer()  # None = 数据库不可达（降级，无持久化）
 
     async with SessionLocal() as session:
@@ -176,25 +189,54 @@ async def execute_run(
                 budgets=budgets,
                 session=session,
                 window=s.short_term_window,
+                tool_policy=agent.tool_policy or {},
             )
             graph = build_graph(ctx, checkpointer=checkpointer)
             config = {"configurable": {"thread_id": str(thread_id)}}
-            async with asyncio.timeout(s.run_timeout_seconds):
-                # updates 模式：每个节点结束产出 {node: state} → state_snapshot 事件
-                async for mode, payload in graph.astream(
-                    {"messages": [HumanMessage(content=user_input)]},
-                    config=config,
-                    stream_mode=["updates"],
-                ):
-                    if mode != "updates":
-                        continue
-                    for node_name, values in payload.items():
-                        await bus.publish(
-                            bus.next_event(
-                                "state_snapshot",
-                                {"node": node_name, "state": sanitize_state(values)},
+            # HITL 循环：interrupt 挂起 → 等待 resume → Command(resume=...) 继续
+            # LangGraph 1.x：interrupt 以 __interrupt__ 更新项流式返回（不抛异常）
+            stream_input: object = {"messages": [HumanMessage(content=user_input)]}
+            while True:
+                interrupted_value = None
+                async with asyncio.timeout(s.run_timeout_seconds):
+                    # updates 模式：每个节点结束产出 {node: state} → state_snapshot 事件
+                    async for mode, payload in graph.astream(
+                        stream_input, config=config, stream_mode=["updates"]
+                    ):
+                        if mode != "updates":
+                            continue
+                        if "__interrupt__" in payload:
+                            raw = payload["__interrupt__"]
+                            inter = raw[0] if isinstance(raw, (tuple, list)) else raw
+                            interrupted_value = inter.value if hasattr(inter, "value") else inter
+                            continue
+                        for node_name, values in payload.items():
+                            await bus.publish(
+                                bus.next_event(
+                                    "state_snapshot",
+                                    {"node": node_name, "state": sanitize_state(values)},
+                                )
                             )
-                        )
+                if interrupted_value is None:
+                    break
+                run.status = "interrupted"
+                await session.commit()
+                await bus.publish(
+                    bus.next_event(
+                        "interrupt",
+                        {
+                            "pending": (interrupted_value or {}).get("pending", []),
+                            "resumable": True,
+                        },
+                    )
+                )
+                decision = await manager.wait_for_resume(run_id)  # 取消时抛 CancelledError
+                run.status = "running"
+                await session.commit()
+                await bus.publish(
+                    bus.next_event("resumed", {"action": (decision or {}).get("action")})
+                )
+                stream_input = Command(resume=decision)
 
             final_state = await graph.aget_state(config)
             values = final_state.values or {}
@@ -251,11 +293,12 @@ async def execute_run(
 
 
 class RunManager:
-    """运行实例注册表：事件总线 + 后台任务生命周期。"""
+    """运行实例注册表：事件总线 + 后台任务生命周期 + HITL 决议通道。"""
 
     def __init__(self) -> None:
         self._buses: dict[uuid.UUID, EventBus] = {}
         self._tasks: dict[uuid.UUID, asyncio.Task] = {}
+        self._resume_futures: dict[uuid.UUID, asyncio.Future] = {}
 
     def bus_for(self, run_id: uuid.UUID) -> EventBus:
         if run_id not in self._buses:
@@ -269,6 +312,19 @@ class RunManager:
         task = asyncio.create_task(self._run_and_cleanup(run_id, coro), name=f"run-{run_id}")
         self._tasks[run_id] = task
 
+    def wait_for_resume(self, run_id: uuid.UUID) -> asyncio.Future:
+        """interrupt 挂起后等待人工决议的 Future（resume API 填充结果）。"""
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._resume_futures[run_id] = fut
+        return fut
+
+    def resume(self, run_id: uuid.UUID, decision: dict) -> bool:
+        fut = self._resume_futures.get(run_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(decision)
+        return True
+
     async def _run_and_cleanup(
         self, run_id: uuid.UUID, coro: Callable[[], Awaitable[None]]
     ) -> None:
@@ -281,13 +337,17 @@ class RunManager:
             if bus is not None:
                 await bus.close()
             self._tasks.pop(run_id, None)
+            self._resume_futures.pop(run_id, None)
 
     def cancel(self, run_id: uuid.UUID) -> bool:
         task = self._tasks.get(run_id)
-        if task is not None and not task.done():
-            task.cancel()
-            return True
-        return False
+        if task is None or task.done():
+            return False
+        fut = self._resume_futures.pop(run_id, None)
+        if fut is not None and not fut.done():
+            fut.cancel()  # 唤醒等待决议的任务 → CancelledError → 状态 cancelled
+        task.cancel()
+        return True
 
     async def replay(self, run_id: uuid.UUID, after_seq: int) -> list[Event]:
         """从 events 表回放（SSE 断线补拉 / Timeline 数据源）。"""

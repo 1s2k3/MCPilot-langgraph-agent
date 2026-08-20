@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from app.agent.checkpoint import close_checkpointer, get_checkpointer
 from app.api.agents import router as agents_router
 from app.api.health import router as health_router
+from app.api.keys import router as keys_router
 from app.api.mcp import router as mcp_router
 from app.api.memory import router as memory_router
 from app.api.runs import router as runs_router
@@ -65,6 +66,7 @@ app.include_router(runs_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
+app.include_router(keys_router, prefix="/api")
 
 
 @app.exception_handler(AppError)

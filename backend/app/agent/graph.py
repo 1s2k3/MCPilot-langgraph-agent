@@ -11,20 +11,27 @@
 - 护栏：max_llm_calls / max_total_tool_calls / max_plan_steps / max_attempts_per_step
 """
 
-import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, message_chunk_to_message
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    message_chunk_to_message,
+)
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from app.agent.schemas import Plan, ReflectionVerdict
 from app.agent.state import AgentState
 from app.core.errors import AppError
 from app.events.bus import EventBus
 from app.memory.retriever import memory_context_text, retrieve_memories
-from app.tools.executor import execute_tool_call
+from app.tools.executor import execute_tool_call, mask_secrets, to_json_safe
+from app.tools.policy import resolve_tool_action
 from app.tools.registry import ToolRegistry
 
 _USAGE_KEYS = (
@@ -106,6 +113,7 @@ class GraphContext:
     budgets: dict = field(default_factory=dict)
     session: object = None  # 运行任务的 DB 会话（工具落库用）
     window: int = 20  # 短期记忆消息窗口
+    tool_policy: dict = field(default_factory=dict)  # §5.9 权限策略
 
 
 def build_graph(ctx: GraphContext, checkpointer=None):
@@ -213,7 +221,12 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             except Exception:  # noqa: BLE001
                 pass
 
-        tools = ctx.registry.langchain_tools()
+        # deny 工具在绑定阶段即隐藏（§5.9：隐藏优于执行时拦截）
+        tools = [
+            m.tool
+            for m in ctx.registry.all_metas()
+            if resolve_tool_action(ctx.tool_policy, m.tool.name, m.server) != "deny"
+        ]
         model = ctx.llms["executor"].bind_tools(tools) if tools else ctx.llms["executor"]
         llm_input: list = [SystemMessage(content=ctx.system_prompt)]
         llm_input.append(
@@ -243,24 +256,80 @@ def build_graph(ctx: GraphContext, checkpointer=None):
         return result
 
     async def tools_node(state: AgentState) -> dict:
-        """自定义工具节点（M5 加权限校验 interrupt）：事件 + 落库 + 规范化。"""
+        """工具节点：权限校验（ask → interrupt HITL）→ 顺序执行 → 事件 + 落库 + 规范化。
+
+        混合场景（部分批准部分拒绝）单遍处理：结果按 tool_calls 顺序回喂 LLM。
+        """
         last = state["messages"][-1]
         calls = list(getattr(last, "tool_calls", None) or [])
         if not calls:
             return {}
         if state.get("tool_call_count", 0) + len(calls) > max_tool_calls:
             raise AppError("budget_exceeded", "工具调用次数超限，已中止", retryable=False)
-        results = await asyncio.gather(
-            *[
-                execute_tool_call(
-                    ctx.registry, tc, bus=ctx.bus, run_id=ctx.run_id, session=ctx.session
+
+        approvals = dict(state.get("tool_approvals") or {})
+        pending: list[dict] = []
+        for tc in calls:
+            meta = ctx.registry.get(tc.get("name"))
+            server = meta.server if meta is not None else "local"
+            if (
+                resolve_tool_action(ctx.tool_policy, tc.get("name"), server) == "ask"
+                and approvals.get(tc.get("name")) != "allow"
+            ):
+                pending.append(
+                    {
+                        "name": tc.get("name"),
+                        "args": to_json_safe(mask_secrets(tc.get("args") or {})),
+                        "id": tc.get("id"),
+                    }
                 )
-                for tc in calls
-            ]
-        )
+        denied_ids: set[str] = set()
+        denied_feedback = ""
+        if pending:
+            if checkpointer is None:
+                # interrupt 依赖 checkpoint 持久化；不可用时明确失败而非静默拒绝
+                raise AppError(
+                    "checkpoint_required",
+                    "工具审批（ask 策略）需要 checkpoint 持久化，当前数据库不可用",
+                    retryable=False,
+                )
+            # HITL：挂起等待人工决议（resume API → Command(resume=...)）
+            decision = interrupt({"pending": pending}) or {}
+            if decision.get("action") == "approve":
+                if decision.get("session_wide"):
+                    for item in pending:
+                        approvals[item["name"]] = "allow"
+            else:
+                denied_ids = {item["id"] for item in pending}
+                denied_feedback = decision.get("feedback") or ""
+
+        results_by_id: dict[str, ToolMessage] = {}
+        for tc in calls:
+            if tc.get("id") in denied_ids:
+                # deny：is_error ToolMessage 回喂，让 agent 自行改道（§5.9）
+                msg = "用户拒绝了该工具调用。"
+                if denied_feedback:
+                    msg += f"用户反馈: {denied_feedback}"
+                results_by_id[tc.get("id")] = ToolMessage(
+                    content=msg, tool_call_id=tc.get("id"), status="error"
+                )
+                continue
+            meta = ctx.registry.get(tc.get("name"))
+            if meta is None:
+                results_by_id[tc.get("id")] = ToolMessage(
+                    content=f"未知工具: {tc.get('name')}",
+                    tool_call_id=tc.get("id"),
+                    status="error",
+                )
+                continue
+            results_by_id[tc.get("id")] = await execute_tool_call(
+                meta, tc, bus=ctx.bus, run_id=ctx.run_id, session=ctx.session
+            )
+        ordered = [results_by_id[tc.get("id")] for tc in calls if tc.get("id") in results_by_id]
         return {
-            "messages": list(results),
+            "messages": ordered,
             "tool_call_count": state.get("tool_call_count", 0) + len(calls),
+            "tool_approvals": approvals,
         }
 
     async def reflector_node(state: AgentState) -> dict:

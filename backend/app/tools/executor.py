@@ -111,8 +111,9 @@ async def execute_tool_call(
         args=masked_args,
         status="running",
     )
-    session.add(row)
-    await session.commit()
+    if session is not None:  # 无 DB 会话时（图级测试）跳过落库，执行与事件照常
+        session.add(row)
+        await session.commit()
     await bus.publish(
         bus.next_event(
             "tool_call_start",
@@ -170,4 +171,5 @@ async def execute_tool_call(
         )
     finally:
         row.duration_ms = int((time.perf_counter() - start) * 1000)
-        await session.commit()
+        if session is not None:
+            await session.commit()
