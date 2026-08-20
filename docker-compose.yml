@@ -24,7 +24,42 @@ services:
     expose:
       - "8001"
 
-  # api / web 服务在 M3/M6 里程碑加入；api 通过 MCP_DEMO_URL=http://mcp-demo:8001/mcp 接入
+  api:
+    build: ./backend
+    container_name: agent-platform-api
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent_platform
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      APP_MASTER_KEY: ${APP_MASTER_KEY:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-agent-platform}
+      LANGGRAPH_STRICT_MSGPACK: "true"
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
+      SCRIPTED_LLM: ${SCRIPTED_LLM:-false}
+      MCP_DEMO_URL: http://mcp-demo:8001/mcp
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp-demo:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: ./frontend
+    container_name: agent-platform-web
+    ports:
+      - "5174:80"
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   pgdata:

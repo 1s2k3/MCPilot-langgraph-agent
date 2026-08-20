@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     embedding_provider: str = "local"  # local | disabled
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # 384 维
     embedding_dim: int = 384
+    embedding_cache_dir: str | None = None  # fastembed 模型缓存目录（CI 缓存/Docker 预热用）
 
     # ---- Tool 结果管理 ----
     tool_result_cap_bytes: int = 102_400  # 结果落库上限（超出截断）

@@ -27,7 +27,10 @@ def get_embedder():
             if _embedder is None:
                 from fastembed import TextEmbedding
 
-                _embedder = TextEmbedding(model_name=s.embedding_model)
+                kwargs = {"model_name": s.embedding_model}
+                if s.embedding_cache_dir:
+                    kwargs["cache_dir"] = s.embedding_cache_dir
+                _embedder = TextEmbedding(**kwargs)
                 logger.info("embedder_loaded", model=s.embedding_model)
     return _embedder
 

@@ -46,11 +46,16 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://agent:agent@localhost:5432/agent_platform
       SCRIPTED_LLM: "true"
+      EMBEDDING_CACHE_DIR: ~/.cache/fastembed
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/fastembed
+          key: fastembed-all-MiniLM-L6-v2
       - run: pip install -e "backend[dev]"
       - run: cd backend && alembic upgrade head
       - run: pytest backend/tests/integration -q

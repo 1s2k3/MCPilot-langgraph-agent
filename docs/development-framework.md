@@ -694,3 +694,37 @@ services:
 3. §5.9 权限模型（allow/ask/deny + 会话级授权）粒度是否合适？
 4. §12 里程碑顺序与验收标准是否需要调整？
 5. §1.2 Non-Goals 边界是否有遗漏或需要放宽（如是否允许只读文件工具）？
+
+---
+
+## 16. 交付状态（2026-08-20）
+
+### 里程碑状态
+
+| 里程碑 | 状态 | 提交 |
+|---|---|---|
+| M0 脚手架 | ✅ | d282747 |
+| M1 LLM + Agent Loop + SSE | ✅ | d282747 |
+| M2 MCP 接入 | ✅ | 9afa2e5 |
+| M3 Checkpoint + Memory | ✅ | 2ff6adb |
+| M4 Planning + Reflection | ✅ | 1e1706a |
+| M5 Permission + HITL + Key | ✅ | 2b6d96e |
+| M6 前端 Observability UI | ✅ | ec840f1 |
+| M7 Evaluation | ✅ | e7a0768 |
+| M8 加固收尾 | 见下 | — |
+
+### 与设计文档的偏差记录（ADR 补充）
+
+1. **LangGraph 1.x interrupt 语义**：`astream` 不再抛 `GraphInterrupt`，而是以 `__interrupt__` 更新项流式返回 `Interrupt` 对象；runner 据此检测挂起（§5.9 实现细节变化，契约不变）。
+2. **embedding 运行时**：文档写 sentence-transformers，实现用 **fastembed**（同款 all-MiniLM-L6-v2 ONNX 模型，384 维，无 torch 依赖，镜像体积与启动时间大幅下降）。
+3. **langchain-mcp-adapters 0.3.x**：`MultiServerMCPClient` 不支持上下文管理器；每次工具调用独立会话（stateless），无显式 close。
+4. **评估中的 ask 策略**：自动放行（评估确定性优先）；HITL 由生产 run 覆盖。
+5. **Windows 开发**：uvicorn 0.52+ 默认 Proactor 循环与 psycopg 异步冲突，提供 `--loop app.server:loop_factory`。
+6. **memories 去重**：按 thread 内规范化文本在 Python 层去重（线程级记忆量小，无需额外列）。
+7. **post-run 记忆提取**：异步执行且不发 memory_write 事件（总线已关闭）；Agent 主动 remember_memory 的写入通过 tool_call 事件可见。
+
+### v1 已知边界
+
+- 集成测试需 PostgreSQL（本地无 Docker 时自动跳过；CI 全量执行）
+- 真实 LLM 路径（Anthropic）未经线上验证（本机无 API Key）；scripted 路径全链路确定性覆盖
+- HITL 审批无超时（人工决议等待不限时，可 cancel）
