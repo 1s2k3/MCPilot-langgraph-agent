@@ -19,7 +19,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 async def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
     """可选网关鉴权：配置了 ADMIN_TOKEN 时，所有 API 需携带 X-Admin-Token。"""
     token = get_settings().admin_token
-    if token is None:
+    # 空字符串视为未配置（pydantic 会把空 env 解析为空 SecretStr 而非 None）
+    if token is None or not token.get_secret_value():
         return
     if x_admin_token is None or x_admin_token != token.get_secret_value():
         raise HTTPException(

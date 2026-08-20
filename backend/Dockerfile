@@ -2,17 +2,18 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 先装依赖（利用层缓存）
+# 层序优化：依赖安装与 embedding 模型预热只依赖 pyproject + memory/core 模块，
+# 后续 app 代码变更不会重新下载模型（层缓存命中）
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e . 2>/dev/null || true
+COPY app/memory ./app/memory
+COPY app/core ./app/core
+RUN pip install --no-cache-dir -e .
+RUN python -c "from app.memory.embedder import embed; embed(['warmup'])"
 
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
 RUN pip install --no-cache-dir .
-
-# 预下载 embedding 模型（打镜像，避免容器启动时下载）
-RUN python -c "from app.memory.embedder import embed; embed(['warmup'])"
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

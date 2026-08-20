@@ -96,3 +96,15 @@ async def test_responder_fallback_generates_responses() -> None:
     out = await llm.ainvoke([HumanMessage(content="trigger")])
     assert out.content == "generated"
     assert seen == ["trigger"]
+
+
+async def test_demo_responder_reacts_to_human_messages() -> None:
+    """回归：HumanMessage.type == "human"，demo 分支必须能读到用户文本（部署 E2E 发现的 bug）。"""
+    from app.llm.scripted import demo_plan_responder, demo_responder
+
+    # 计算分支：planner 给出两步计划，executor 第一步发起 calculator 工具调用
+    plan = demo_plan_responder([HumanMessage(content='{"任务": "please calculate 1+2"}')])
+    assert any("计算" in s.goal for s in plan[0].steps)
+    first = demo_responder([HumanMessage(content="please calculate 1+2")])[0]
+    assert getattr(first, "tool_calls", None), "executor 应发起 calculator 工具调用"
+    assert first.tool_calls[0]["name"] == "calculator"

@@ -69,7 +69,8 @@ async def admin_token_middleware(request: Request, call_next):
     """网关鉴权（§9）：配置 ADMIN_TOKEN 时，/api/* 必须携带
     X-Admin-Token 头或 ?admin_token= 查询参数（SSE EventSource 无法自定义头）。"""
     token = settings.admin_token
-    if token is not None and request.url.path.startswith("/api"):
+    # 空字符串视为未配置（pydantic 会把空 env 解析为空 SecretStr 而非 None）
+    if token is not None and token.get_secret_value() and request.url.path.startswith("/api"):
         provided = request.headers.get("x-admin-token") or request.query_params.get("admin_token")
         if provided is None or provided != token.get_secret_value():
             return JSONResponse(

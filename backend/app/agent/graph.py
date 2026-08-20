@@ -67,7 +67,8 @@ def _latest_user_text(state: AgentState) -> str:
         if isinstance(m, tuple):  # 输入阶段的 ("user", text) 形式
             if m[0] == "user":
                 return str(m[1])
-        elif m.type == "user" and isinstance(m.content, str):
+        # langchain 消息类型：HumanMessage.type == "human"（不是 "user"）
+        elif m.type == "human" and isinstance(m.content, str):
             return m.content
     return ""
 

@@ -170,7 +170,7 @@ def _step_goal_and_user_text(messages: list[BaseMessage]) -> str:
             m.content if isinstance(m.content, str) else ""
         ):
             goal = m.content if isinstance(m.content, str) else ""
-        elif m.type == "user" and isinstance(m.content, str):
+        elif m.type == "human" and isinstance(m.content, str):
             user_text += m.content
     return goal + " " + user_text
 
@@ -180,9 +180,24 @@ def demo_responder(messages: list[BaseMessage]) -> list[Any]:
     key = _step_goal_and_user_text(messages)
     if "确认" in key:
         return [AIMessage(content="已确认，结果正确。")]
+    if "时间" in key or "几点" in key:
+        return [
+            AIMessage(
+                content="我来查一下当前时间。",
+                tool_calls=[
+                    {
+                        "name": "get_current_time",
+                        "args": {},
+                        "id": "demo-time-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="已查到当前时间。"),
+        ]
     if "记住" in key:
         user_text = "".join(
-            m.content if isinstance(m.content, str) else "" for m in messages if m.type == "user"
+            m.content if isinstance(m.content, str) else "" for m in messages if m.type == "human"
         )
         content = user_text.split("记住", 1)[1].strip(" ：:，,。") or "用户要求记住一些信息"
         return [
@@ -199,7 +214,7 @@ def demo_responder(messages: list[BaseMessage]) -> list[Any]:
             ),
             AIMessage(content="已记住。"),
         ]
-    if "计算" in key:
+    if "计算" in key or "算" in key or "多少" in key or "1+2" in key or "2*3" in key:
         return [
             AIMessage(
                 content="我来算一下。",
@@ -226,7 +241,7 @@ def demo_plan_responder(messages: list[BaseMessage]) -> list[Any]:
     text = "".join(
         m.content if isinstance(m.content, str) else "" for m in messages if m.type == "human"
     )
-    if any(k in text for k in ("计算", "1+2", "2*3")):
+    if any(k in text for k in ("计算", "算", "多少", "1+2", "2*3")):
         return [
             Plan(
                 steps=[

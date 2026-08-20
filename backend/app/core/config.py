@@ -4,9 +4,10 @@
 """
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -71,13 +72,28 @@ class Settings(BaseSettings):
     langchain_project: str = "agent-platform"
 
     # ---- Web ----
-    cors_origins: list[str] = ["http://localhost:5173"]
+    # NoDecode：允许逗号分隔字符串形式（pydantic-settings 默认会对复杂字段做 JSON 解码）
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
 
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors(cls, v: object) -> object:
         if isinstance(v, str):
             return [x.strip() for x in v.split(",") if x.strip()]
+        return v
+
+    @field_validator(
+        "app_master_key",
+        "admin_token",
+        "anthropic_api_key",
+        "langchain_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _empty_secret_to_none(cls, v: object) -> object:
+        """空字符串视为未配置（.env 里 KEY= 占位很常见；SecretStr 不接受空串）。"""
+        if isinstance(v, str) and not v.strip():
+            return None
         return v
 
 
