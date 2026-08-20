@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
+from langchain_core.messages import HumanMessage
 from sqlalchemy import func, select
 
 from app.agent.checkpoint import get_checkpointer
@@ -20,7 +21,13 @@ from app.events.bus import EventBus
 from app.events.models import Event
 from app.llm.anthropic import build_anthropic_model
 from app.llm.base import resolve_llm_config
-from app.llm.scripted import ScriptedChatModel, demo_responder
+from app.llm.scripted import (
+    ScriptedChatModel,
+    demo_finalizer_responder,
+    demo_plan_responder,
+    demo_reflect_responder,
+    demo_responder,
+)
 from app.memory.extractor import store_extracted_memories
 from app.tools.mcp_client import mcp_manager
 from app.tools.registry import build_registry
@@ -39,9 +46,9 @@ def build_node_llms(agent_row: Agent) -> dict[str, object]:
             logger.warning("no_anthropic_key_using_scripted")
         return {
             "executor": ScriptedChatModel(responder=demo_responder),
-            "planner": ScriptedChatModel(),
-            "reflector": ScriptedChatModel(),
-            "finalizer": ScriptedChatModel(),
+            "planner": ScriptedChatModel(responder=demo_plan_responder),
+            "reflector": ScriptedChatModel(responder=demo_reflect_responder),
+            "finalizer": ScriptedChatModel(responder=demo_finalizer_responder),
             "memory_extractor": ScriptedChatModel(),
             "judge": ScriptedChatModel(),
         }
@@ -159,9 +166,10 @@ async def execute_run(
             await session.commit()
 
             ctx = GraphContext(
-                llm_executor=llms["executor"],
+                llms=llms,
                 registry=registry,
                 system_prompt=agent.system_prompt or "",
+                planner_prompt=agent.planner_prompt or "",
                 bus=bus,
                 run_id=run_id,
                 thread_id=thread_id,
@@ -172,14 +180,15 @@ async def execute_run(
             graph = build_graph(ctx, checkpointer=checkpointer)
             config = {"configurable": {"thread_id": str(thread_id)}}
             async with asyncio.timeout(s.run_timeout_seconds):
-                # updates 模式：每个节点结束产出 (node, state) → state_snapshot 事件
-                async for chunk in graph.astream(
-                    {"messages": [("user", user_input)]},
+                # updates 模式：每个节点结束产出 {node: state} → state_snapshot 事件
+                async for mode, payload in graph.astream(
+                    {"messages": [HumanMessage(content=user_input)]},
                     config=config,
                     stream_mode=["updates"],
                 ):
-                    if isinstance(chunk, tuple) and len(chunk) == 2:
-                        node_name, values = chunk
+                    if mode != "updates":
+                        continue
+                    for node_name, values in payload.items():
                         await bus.publish(
                             bus.next_event(
                                 "state_snapshot",

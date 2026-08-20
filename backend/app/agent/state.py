@@ -1,8 +1,6 @@
 """Agent 状态（LangGraph StateGraph schema）。
 
-随里程碑扩展：
-- M4: plan / current_step_index / reflection_log
-- M5: tool_approvals（会话级工具授权，随 checkpoint 持久化）
+M5 待扩展：tool_approvals（会话级工具授权，随 checkpoint 持久化）。
 注意：所有值必须 JSON 可序列化（checkpoint 持久化要求）。
 """
 
@@ -20,3 +18,7 @@ class AgentState(TypedDict, total=False):
     final_answer: str | None
     summary: str  # 短期记忆滚动摘要（窗口超限时压缩生成）
     memory_context: str  # 长期记忆检索注入（load_context 节点产出）
+    plan: list[dict] | None  # 步骤计划（§5.4 契约的 JSON 化）
+    current_step_index: int  # 当前步骤
+    reflection_log: list[dict]  # 反思记录（UI 可视化 + 评估指标数据源）
+    next_node: str  # reflector 路由信号（显式控制流）

@@ -33,9 +33,12 @@ def _dump(messages: list[BaseMessage]) -> list[dict]:
     out = []
     for m in messages:
         try:
-            out.append(m.to_json())
+            if isinstance(m, tuple):
+                out.append({"type": m[0], "content": str(m[1])})
+            else:
+                out.append(m.to_json())
         except Exception:  # noqa: BLE001
-            out.append({"type": m.type, "content": str(m.content)})
+            out.append({"type": getattr(m, "type", "?"), "content": str(getattr(m, "content", ""))})
     return out
 
 
@@ -158,12 +161,29 @@ class _ScriptedStructured(Runnable):
         return value
 
 
+def _step_goal_and_user_text(messages: list[BaseMessage]) -> str:
+    """executor 分支键：步骤目标（系统消息中的「当前步骤目标」）+ 用户文本。"""
+    goal = ""
+    user_text = ""
+    for m in messages:
+        if m.type == "system" and "当前步骤目标" in (
+            m.content if isinstance(m.content, str) else ""
+        ):
+            goal = m.content if isinstance(m.content, str) else ""
+        elif m.type == "user" and isinstance(m.content, str):
+            user_text += m.content
+    return goal + " " + user_text
+
+
 def demo_responder(messages: list[BaseMessage]) -> list[Any]:
-    """离线演示：计算→calculator；记住→remember_memory；其余直接回答（无 API Key 时可用）。"""
-    user_text = "".join(
-        m.content if isinstance(m.content, str) else "" for m in messages if m.type == "user"
-    )
-    if "记住" in user_text:
+    """离线演示 executor：计算→calculator；记住→remember_memory；其余直接完成步骤。"""
+    key = _step_goal_and_user_text(messages)
+    if "确认" in key:
+        return [AIMessage(content="已确认，结果正确。")]
+    if "记住" in key:
+        user_text = "".join(
+            m.content if isinstance(m.content, str) else "" for m in messages if m.type == "user"
+        )
         content = user_text.split("记住", 1)[1].strip(" ：:，,。") or "用户要求记住一些信息"
         return [
             AIMessage(
@@ -179,7 +199,7 @@ def demo_responder(messages: list[BaseMessage]) -> list[Any]:
             ),
             AIMessage(content="已记住。"),
         ]
-    if any(k in user_text for k in ("计算", "1+2", "2*3")):
+    if "计算" in key:
         return [
             AIMessage(
                 content="我来算一下。",
@@ -192,10 +212,49 @@ def demo_responder(messages: list[BaseMessage]) -> list[Any]:
                     }
                 ],
             ),
-            AIMessage(content="计算结果是 3。"),
+            AIMessage(content="已算出结果。"),
         ]
     return [
-        AIMessage(content="（离线演示模式）这是脚本化回复。配置 ANTHROPIC_API_KEY 后启用真实模型。")
+        AIMessage(content="（离线演示模式）本步骤已完成。配置 ANTHROPIC_API_KEY 后启用真实模型。")
+    ]
+
+
+def demo_plan_responder(messages: list[BaseMessage]) -> list[Any]:
+    """离线演示 planner：计算任务给两步计划，其余单步。"""
+    from app.agent.schemas import Plan, PlanStep
+
+    text = "".join(
+        m.content if isinstance(m.content, str) else "" for m in messages if m.type == "human"
+    )
+    if any(k in text for k in ("计算", "1+2", "2*3")):
+        return [
+            Plan(
+                steps=[
+                    PlanStep(id="s1", goal="用 calculator 工具计算 1+2", tools_hint=["calculator"]),
+                    PlanStep(id="s2", goal="确认计算结果正确"),
+                ],
+                rationale="演示：两步计划（计算 → 确认）",
+            )
+        ]
+    return [Plan(steps=[PlanStep(id="s1", goal="直接回答用户问题")], rationale="简单任务单步即可")]
+
+
+def demo_reflect_responder(messages: list[BaseMessage]) -> list[Any]:
+    """离线演示 reflector：一律评审通过。"""
+    from app.agent.schemas import ReflectionVerdict
+
+    return [ReflectionVerdict(verdict="pass", reason="演示评审：通过")]
+
+
+def demo_finalizer_responder(messages: list[BaseMessage]) -> list[Any]:
+    """离线演示 finalizer：按任务类型给最终回答。"""
+    text = "".join(
+        m.content if isinstance(m.content, str) else "" for m in messages if m.type == "human"
+    )
+    if "计算" in text:
+        return [AIMessage(content="计算结果是 3。")]
+    return [
+        AIMessage(content="（离线演示模式）任务已完成。配置 ANTHROPIC_API_KEY 后启用真实模型。")
     ]
 
 

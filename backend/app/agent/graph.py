@@ -1,16 +1,25 @@
-"""Agent 图（M3：load_context → executor ⇄ tools；M4 扩展 planner/reflector/finalizer）。
+"""Agent 图（§5.3 完整拓扑）：
 
-每次 run 编译一次图（LangGraph 编译开销毫秒级），通过 GraphContext 闭包注入
-运行上下文（事件总线 / DB 会话 / 工具注册表），便于测试与 per-run 隔离。
+    START → load_context → planner → executor ⇄ tools
+                                    executor（无工具调用，步骤完成）→ reflector
+    reflector: pass(还有步骤) → executor | pass(最后一步) → finalizer
+               retry → executor（注入反馈） | 重试耗尽 → planner
+               replan → planner | abort → finalizer（部分结果）
+
+控制流约定：
+- reflector 在 state.next_node 中写入显式路由信号（可测试、可回放）
+- 护栏：max_llm_calls / max_total_tool_calls / max_plan_steps / max_attempts_per_step
 """
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, message_chunk_to_message
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.schemas import Plan, ReflectionVerdict
 from app.agent.state import AgentState
 from app.core.errors import AppError
 from app.events.bus import EventBus
@@ -26,6 +35,19 @@ _USAGE_KEYS = (
     "cache_creation_input_tokens",
 )
 
+_DEFAULT_PLAN_PROMPT = """你是任务规划器。把用户任务拆解为按顺序执行的步骤（简单任务只需一个步骤）。
+每个步骤目标要具体、可验证；在 tools_hint 中给出建议工具名。计划要最小化步骤数。"""
+
+_REFLECT_PROMPT = """你是步骤评审器。对照步骤目标评审执行结果，输出评审结论：
+- pass: 结果满足目标，可以进入下一步
+- retry: 结果不满足，但修正后可以达成（feedback 给出具体修正意见）
+- replan: 当前计划不可行，需要重新规划
+- abort: 任务无法完成，应终止并如实说明
+只依据证据评审，不臆测。"""
+
+_FINALIZER_PROMPT = """你是最终回答生成器。基于已完成步骤的结果，生成面向用户的最终回答。
+要求：直接回答用户任务；未完成的步骤要如实说明；不要调用任何工具。"""
+
 
 def _usage_dict(metadata) -> dict[str, int]:
     if not metadata:
@@ -35,9 +57,28 @@ def _usage_dict(metadata) -> dict[str, int]:
 
 def _latest_user_text(state: AgentState) -> str:
     for m in reversed(state.get("messages", [])):
-        if m.type == "user" and isinstance(m.content, str):
+        if isinstance(m, tuple):  # 输入阶段的 ("user", text) 形式
+            if m[0] == "user":
+                return str(m[1])
+        elif m.type == "user" and isinstance(m.content, str):
             return m.content
     return ""
+
+
+def _brief(m) -> dict:
+    if isinstance(m, tuple):
+        return {"role": m[0], "content": str(m[1])[:2000]}
+    content = m.content
+    brief: dict = {"role": m.type}
+    if isinstance(content, str):
+        brief["content"] = content[:2000]
+    else:
+        brief["content"] = str(content)[:500]
+    if getattr(m, "tool_calls", None):
+        brief["tool_calls"] = [
+            {"name": tc.get("name"), "args": tc.get("args")} for tc in m.tool_calls
+        ]
+    return brief
 
 
 def _summarize_prompt(old_summary: str, messages) -> str:
@@ -55,12 +96,13 @@ def _summarize_prompt(old_summary: str, messages) -> str:
 
 @dataclass
 class GraphContext:
-    llm_executor: object  # BaseChatModel（Anthropic 或 Scripted）
+    llms: dict  # {planner, executor, reflector, finalizer}
     registry: ToolRegistry
     system_prompt: str
-    bus: EventBus
-    run_id: uuid.UUID
-    thread_id: uuid.UUID
+    planner_prompt: str = ""
+    bus: EventBus = None
+    run_id: uuid.UUID | None = None
+    thread_id: uuid.UUID | None = None
     budgets: dict = field(default_factory=dict)
     session: object = None  # 运行任务的 DB 会话（工具落库用）
     window: int = 20  # 短期记忆消息窗口
@@ -70,41 +112,123 @@ def build_graph(ctx: GraphContext, checkpointer=None):
     g = StateGraph(AgentState)
     max_llm_calls = int(ctx.budgets.get("max_llm_calls", 40))
     max_tool_calls = int(ctx.budgets.get("max_total_tool_calls", 30))
+    max_plan_steps = int(ctx.budgets.get("max_plan_steps", 8))
+    max_attempts = int(ctx.budgets.get("max_attempts_per_step", 3))
+
+    async def _publish(type_: str, payload: dict | None = None) -> None:
+        if ctx.bus is not None:
+            await ctx.bus.publish(ctx.bus.next_event(type_, payload))
+
+    async def _stream_llm(node: str, model, llm_input: list) -> AIMessage:
+        """统一流式调用：llm_start/llm_delta/llm_end 事件 + usage。"""
+        await _publish("llm_start", {"node": node})
+        merged = None
+        async for chunk in model.astream(llm_input):
+            merged = chunk if merged is None else merged + chunk
+            delta = chunk.content
+            if isinstance(delta, str) and delta:
+                await _publish("llm_delta", {"node": node, "delta": delta})
+        message = message_chunk_to_message(merged) if merged is not None else AIMessage(content="")
+        await _publish(
+            "llm_end",
+            {"node": node, "usage": _usage_dict(getattr(message, "usage_metadata", None))},
+        )
+        return message
+
+    def _bump(state: AgentState, usage: dict | None = None) -> dict:
+        out: dict = {"iteration_count": state.get("iteration_count", 0) + 1}
+        if usage:
+            prev = state.get("usage_total") or {}
+            out["usage_total"] = {k: prev.get(k, 0) + v for k, v in usage.items()}
+        return out
 
     async def load_context_node(state: AgentState) -> dict:
-        """读长期记忆：语义检索 top-k → memory_context（随 checkpoint 持久化）。"""
+        """长期记忆检索注入（best-effort：数据库不可用时静默降级为空）。"""
         query = _latest_user_text(state) or ""
-        memories = await retrieve_memories(query) if query else []
-        text = memory_context_text(memories)
-        if memories:
-            await ctx.bus.publish(
-                ctx.bus.next_event("notice", {"memories_retrieved": len(memories)})
-            )
-        return {"memory_context": text}
+        try:
+            memories = await retrieve_memories(query) if query else []
+            if memories:
+                await _publish("notice", {"memories_retrieved": len(memories)})
+            return {"memory_context": memory_context_text(memories)}
+        except Exception:  # noqa: BLE001
+            return {"memory_context": ""}
 
-    async def executor_node(state: AgentState) -> dict:
-        """执行一步：流式 LLM 输出 + 工具绑定；无工具调用即视为完成。
-
-        短期记忆策略（§5.6.1）：消息超窗口 → 先压缩溢出部分为滚动摘要，再截窗调用。
-        """
+    async def planner_node(state: AgentState) -> dict:
+        """产出步骤计划（结构化输出）。带记忆上下文与失败步骤/反思历史。"""
         if state.get("iteration_count", 0) >= max_llm_calls:
             raise AppError("budget_exceeded", "LLM 调用次数超限，已中止", retryable=False)
+        msgs: list = [SystemMessage(content=ctx.planner_prompt or _DEFAULT_PLAN_PROMPT)]
+        memory_ctx = state.get("memory_context") or ""
+        if memory_ctx:
+            msgs.append(SystemMessage(content=memory_ctx))
+        context: dict = {"任务": _latest_user_text(state)}
+        failed = [s for s in (state.get("plan") or []) if s.get("status") == "failed"]
+        if failed:
+            context["已失败步骤"] = failed
+        reflection = state.get("reflection_log") or []
+        if reflection:
+            context["近期反思"] = reflection[-3:]
+        msgs.append(HumanMessage(content=json.dumps(context, ensure_ascii=False, default=str)))
+
+        out = await ctx.llms["planner"].with_structured_output(Plan).ainvoke(msgs)
+        steps = [
+            s.model_dump() | {"status": "pending", "attempts": 0, "feedback": []}
+            for s in out.steps[:max_plan_steps]
+        ]
+        if not steps:
+            raise AppError("planning_failed", "planner 未产出任何步骤", retryable=False)
+        steps[0]["status"] = "in_progress"
+        await _publish(
+            "plan_created",
+            {
+                "steps": steps,
+                "rationale": out.rationale,
+                "truncated": len(out.steps) > max_plan_steps,
+            },
+        )
+        await _publish("step_start", {"index": 0, "goal": steps[0]["goal"]})
+        result = _bump(state)
+        result.update({"plan": steps, "current_step_index": 0})
+        return result
+
+    async def executor_node(state: AgentState) -> dict:
+        """执行当前步骤：可调工具；一轮无工具调用即视为步骤完成（交 reflector 评审）。"""
+        if state.get("iteration_count", 0) >= max_llm_calls:
+            raise AppError("budget_exceeded", "LLM 调用次数超限，已中止", retryable=False)
+        plan = state.get("plan") or []
+        idx = state.get("current_step_index", 0)
+        if idx >= len(plan):
+            return {"next_node": "finalizer"}
+        step = plan[idx]
 
         messages = state.get("messages", [])
         result: dict = {}
-        # 超窗压缩（懒触发：仅超窗时多一次 LLM 调用）
+        # 超窗压缩（懒触发）
         if len(messages) > ctx.window:
             overflow = messages[: len(messages) - ctx.window]
             prompt = _summarize_prompt(state.get("summary") or "", overflow)
             try:
-                out = await ctx.llm_executor.ainvoke([HumanMessage(content=prompt)])
+                out = await ctx.llms["executor"].ainvoke([HumanMessage(content=prompt)])
                 result["summary"] = out.content if isinstance(out.content, str) else ""
             except Exception:  # noqa: BLE001
-                pass  # 压缩失败不阻断，直接截窗
+                pass
 
         tools = ctx.registry.langchain_tools()
-        model = ctx.llm_executor.bind_tools(tools) if tools else ctx.llm_executor
+        model = ctx.llms["executor"].bind_tools(tools) if tools else ctx.llms["executor"]
         llm_input: list = [SystemMessage(content=ctx.system_prompt)]
+        llm_input.append(
+            SystemMessage(
+                content=(
+                    f"当前步骤目标（第 {idx + 1}/{len(plan)} 步）: {step['goal']}\n"
+                    "完成本步骤后给出结果说明；不要生成面向用户的最终回答。"
+                )
+            )
+        )
+        feedback = (step.get("feedback") or [])[-1:] or []
+        if feedback:
+            llm_input.append(
+                SystemMessage(content=f"反思反馈（上次尝试的问题，请修正）: {feedback[-1]}")
+            )
         summary = state.get("summary") or ""
         if summary:
             llm_input.append(HumanMessage(content=f"[对话历史摘要] {summary}"))
@@ -113,35 +237,13 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             llm_input.append(SystemMessage(content=memory_ctx))
         llm_input.extend(messages[-ctx.window :])
 
-        await ctx.bus.publish(ctx.bus.next_event("llm_start", {"node": "executor"}))
-        merged = None
-        async for chunk in model.astream(llm_input):
-            merged = chunk if merged is None else merged + chunk
-            delta = chunk.content
-            if isinstance(delta, str) and delta:
-                await ctx.bus.publish(
-                    ctx.bus.next_event("llm_delta", {"node": "executor", "delta": delta})
-                )
-
-        message = message_chunk_to_message(merged) if merged is not None else AIMessage(content="")
-        usage = _usage_dict(getattr(message, "usage_metadata", None))
-        await ctx.bus.publish(ctx.bus.next_event("llm_end", {"node": "executor", "usage": usage}))
-
-        prev_usage = state.get("usage_total") or {}
-        result.update(
-            {
-                "messages": [message],
-                "iteration_count": state.get("iteration_count", 0) + 1,
-                "usage_total": {k: prev_usage.get(k, 0) + v for k, v in usage.items()},
-            }
-        )
-        if not message.tool_calls:
-            text = message.content if isinstance(message.content, str) else ""
-            result["final_answer"] = text
+        message = await _stream_llm("executor", model, llm_input)
+        result.update({"messages": [message]})
+        result.update(_bump(state, _usage_dict(getattr(message, "usage_metadata", None))))
         return result
 
     async def tools_node(state: AgentState) -> dict:
-        """自定义工具节点（非 ToolNode）：权限校验（M5）+ 事件 + 落库 + 规范化。"""
+        """自定义工具节点（M5 加权限校验 interrupt）：事件 + 落库 + 规范化。"""
         last = state["messages"][-1]
         calls = list(getattr(last, "tool_calls", None) or [])
         if not calls:
@@ -161,15 +263,126 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             "tool_call_count": state.get("tool_call_count", 0) + len(calls),
         }
 
+    async def reflector_node(state: AgentState) -> dict:
+        """评审步骤结果：pass / retry（注入反馈）/ replan / abort。"""
+        if state.get("iteration_count", 0) >= max_llm_calls:
+            raise AppError("budget_exceeded", "LLM 调用次数超限，已中止", retryable=False)
+        plan = state.get("plan") or []
+        idx = state.get("current_step_index", 0)
+        step = plan[idx]
+        last = state["messages"][-1] if state.get("messages") else None
+        evidence = json.dumps(
+            {
+                "步骤目标": step["goal"],
+                "步骤结果": last.content
+                if last is not None and isinstance(last.content, str)
+                else "",
+                "最近交互": [_brief(m) for m in state.get("messages", [])[-6:]],
+                "已尝试次数": step.get("attempts", 0),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        verdict = (
+            await ctx.llms["reflector"]
+            .with_structured_output(ReflectionVerdict)
+            .ainvoke([SystemMessage(content=_REFLECT_PROMPT), HumanMessage(content=evidence)])
+        )
+        entry = {
+            "step_id": step["id"],
+            "step_index": idx,
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+            "feedback": verdict.feedback,
+        }
+        reflection_log = list(state.get("reflection_log") or []) + [entry]
+        await _publish("reflect", entry)
+        result = _bump(state)
+        result["reflection_log"] = reflection_log
+
+        if verdict.verdict == "pass":
+            step["status"] = "done"
+            await _publish("step_done", {"index": idx, "goal": step["goal"]})
+            if idx + 1 >= len(plan):
+                result.update({"plan": plan, "next_node": "finalizer"})
+            else:
+                plan[idx + 1]["status"] = "in_progress"
+                await _publish("step_start", {"index": idx + 1, "goal": plan[idx + 1]["goal"]})
+                result.update(
+                    {"plan": plan, "current_step_index": idx + 1, "next_node": "executor"}
+                )
+            return result
+
+        step["attempts"] = step.get("attempts", 0) + 1
+        if verdict.verdict == "retry" and step["attempts"] < max_attempts:
+            step["feedback"].append(verdict.feedback)
+            result.update({"plan": plan, "next_node": "executor"})
+            return result
+
+        # retry 耗尽 / replan / abort → 步骤失败
+        step["status"] = "failed"
+        await _publish(
+            "step_failed",
+            {
+                "index": idx,
+                "goal": step["goal"],
+                "verdict": verdict.verdict,
+                "reason": verdict.reason,
+            },
+        )
+        next_node = "planner" if verdict.verdict != "abort" else "finalizer"
+        result.update({"plan": plan, "next_node": next_node})
+        return result
+
+    async def finalizer_node(state: AgentState) -> dict:
+        """汇总已完成的步骤，生成最终回答（不使用工具）。"""
+        if state.get("iteration_count", 0) >= max_llm_calls:
+            raise AppError("budget_exceeded", "LLM 调用次数超限，已中止", retryable=False)
+        plan = state.get("plan") or []
+        context = json.dumps(
+            {
+                "用户任务": _latest_user_text(state),
+                "已完成步骤": [s for s in plan if s.get("status") == "done"],
+                "未完成步骤": [s for s in plan if s.get("status") != "done"],
+                "反思记录": state.get("reflection_log") or [],
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        message = await _stream_llm(
+            "finalizer",
+            ctx.llms["finalizer"],
+            [SystemMessage(content=_FINALIZER_PROMPT), HumanMessage(content=context)],
+        )
+        text = message.content if isinstance(message.content, str) else ""
+        result = _bump(state, _usage_dict(getattr(message, "usage_metadata", None)))
+        result.update({"messages": [message], "final_answer": text})
+        return result
+
     def route_after_executor(state: AgentState) -> str:
         last = state["messages"][-1]
-        return "tools" if getattr(last, "tool_calls", None) else END
+        return "tools" if getattr(last, "tool_calls", None) else "reflector"
+
+    def route_after_reflector(state: AgentState) -> str:
+        return state.get("next_node") or "finalizer"
 
     g.add_node("load_context", load_context_node)
+    g.add_node("planner", planner_node)
     g.add_node("executor", executor_node)
     g.add_node("tools", tools_node)
+    g.add_node("reflector", reflector_node)
+    g.add_node("finalizer", finalizer_node)
     g.add_edge(START, "load_context")
-    g.add_edge("load_context", "executor")
-    g.add_conditional_edges("executor", route_after_executor, {"tools": "tools", END: END})
+    g.add_edge("load_context", "planner")
+    g.add_edge("planner", "executor")
+    g.add_conditional_edges(
+        "executor", route_after_executor, {"tools": "tools", "reflector": "reflector"}
+    )
     g.add_edge("tools", "executor")
+    g.add_conditional_edges(
+        "reflector",
+        route_after_reflector,
+        {"executor": "executor", "planner": "planner", "finalizer": "finalizer"},
+    )
+    g.add_edge("finalizer", END)
     return g.compile(checkpointer=checkpointer)
