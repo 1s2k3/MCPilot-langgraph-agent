@@ -24,6 +24,63 @@ logger = get_logger(__name__)
 
 _ACTIVE_RUN_STATUSES = ("pending", "running", "interrupted")
 
+# run 级别名路由（RunDetail 页 / 记忆溯源跳转用，无需 thread_id）
+alias_router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+@alias_router.get("/{run_id}", response_model=RunOut)
+async def get_run_alias(run_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> Run:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise not_found("Run", str(run_id))
+    return run
+
+
+@alias_router.get("/{run_id}/events")
+async def list_events_alias(
+    run_id: uuid.UUID,
+    after_seq: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise not_found("Run", str(run_id))
+    events = await manager.replay(run_id, after_seq)
+    return {"events": [e.model_dump(mode="json") for e in events]}
+
+
+@alias_router.get("/{run_id}/tool-calls")
+async def list_tool_calls_alias(
+    run_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """运行的工具调用记录（含结果，工具可视化数据源）。"""
+    from app.db.models import ToolCall
+
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise not_found("Run", str(run_id))
+    rows = (
+        await session.execute(
+            select(ToolCall).where(ToolCall.run_id == run_id).order_by(ToolCall.created_at)
+        )
+    ).scalars()
+    return {
+        "tool_calls": [
+            {
+                "id": str(r.id),
+                "tool_name": r.tool_name,
+                "server": r.server,
+                "args": r.args,
+                "result": r.result,
+                "status": r.status,
+                "duration_ms": r.duration_ms,
+                "error": r.error,
+                "truncated": r.truncated,
+            }
+            for r in rows
+        ]
+    }
+
 
 async def _resolve_agent(session: AsyncSession, thread: Thread, body: RunCreate) -> Agent:
     agent_id = body.agent_id or thread.agent_id
@@ -86,6 +143,26 @@ async def create_run(
     manager.start(run.id, lambda: execute_run(run.id, thread.id, agent, body.input, bus))
     logger.info("run_created", run_id=str(run.id), thread_id=str(thread_id))
     return {"run_id": str(run.id)}
+
+
+@router.get("/{thread_id}/runs", response_model=list[RunOut])
+async def list_runs(
+    thread_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> list[Run]:
+    """线程 run 列表（前端恢复活动 run / 历史记录）。"""
+    thread = await session.get(Thread, thread_id)
+    if thread is None:
+        raise not_found("Thread", str(thread_id))
+    return list(
+        (
+            await session.execute(
+                select(Run)
+                .where(Run.thread_id == thread_id)
+                .order_by(Run.created_at.desc())
+                .limit(50)
+            )
+        ).scalars()
+    )
 
 
 @router.get("/{thread_id}/runs/{run_id}", response_model=RunOut)

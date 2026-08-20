@@ -24,7 +24,10 @@ _lock = asyncio.Lock()
 
 def _conn_string() -> str:
     """SQLAlchemy URL → psycopg 原生 URL（checkpointer 使用 psycopg3）。"""
-    return get_settings().database_url.replace("postgresql+psycopg://", "postgresql://")
+    url = get_settings().database_url.replace("postgresql+psycopg://", "postgresql://")
+    if "connect_timeout" not in url:
+        url += ("&" if "?" in url else "?") + "connect_timeout=3"
+    return url
 
 
 async def get_checkpointer() -> AsyncPostgresSaver | None:

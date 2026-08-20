@@ -23,7 +23,8 @@ docker compose up -d postgres
 cd backend
 python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"   # Windows
 alembic upgrade head
-.venv/Scripts/python -m uvicorn app.main:app --reload
+# Windows 需指定 selector 事件循环（psycopg 异步要求）；Linux 可省略 --loop
+.venv/Scripts/python -m uvicorn app.main:app --reload --loop app.server:loop_factory
 
 # 3. 前端
 cd frontend && npm install && npm run dev

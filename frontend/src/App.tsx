@@ -1,4 +1,10 @@
 import { NavLink, Route, Routes } from "react-router-dom";
+import AgentsPage from "./pages/AgentsPage";
+import ChatPage from "./pages/ChatPage";
+import EvalPage from "./pages/EvalPage";
+import KeysPage from "./pages/KeysPage";
+import McpPage from "./pages/McpPage";
+import RunDetailPage from "./pages/RunDetailPage";
 
 const NAV = [
   { to: "/", label: "会话" },
@@ -7,14 +13,6 @@ const NAV = [
   { to: "/keys", label: "Keys" },
   { to: "/eval", label: "评估" },
 ];
-
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="flex h-full items-center justify-center text-slate-400">
-      {title} — 开发中（按里程碑交付）
-    </div>
-  );
-}
 
 export default function App() {
   return (
@@ -39,12 +37,12 @@ export default function App() {
       </header>
       <main className="min-h-0 flex-1">
         <Routes>
-          <Route path="/" element={<Placeholder title="会话" />} />
-          <Route path="/agents" element={<Placeholder title="Agents" />} />
-          <Route path="/mcp" element={<Placeholder title="MCP" />} />
-          <Route path="/keys" element={<Placeholder title="Keys" />} />
-          <Route path="/eval" element={<Placeholder title="评估" />} />
-          <Route path="/runs/:id" element={<Placeholder title="运行详情" />} />
+          <Route path="/" element={<ChatPage />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/mcp" element={<McpPage />} />
+          <Route path="/keys" element={<KeysPage />} />
+          <Route path="/eval" element={<EvalPage />} />
+          <Route path="/runs/:runId" element={<RunDetailPage />} />
         </Routes>
       </main>
     </div>

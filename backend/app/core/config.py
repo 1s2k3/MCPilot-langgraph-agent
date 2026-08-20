@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
 
     # ---- 数据库 ----
-    database_url: str = "postgresql+psycopg://agent:agent@localhost:5432/agent_platform"
+    database_url: str = (
+        "postgresql+psycopg://agent:agent@localhost:5432/agent_platform?connect_timeout=3"
+    )
 
     # ---- 安全 ----
     app_master_key: SecretStr | None = None  # Fernet 主密钥；未配置时 API Key 功能禁用
