@@ -159,10 +159,26 @@ class _ScriptedStructured(Runnable):
 
 
 def demo_responder(messages: list[BaseMessage]) -> list[Any]:
-    """离线演示：计算类问题调用 calculator 工具，其余直接回答（无 API Key 时可用）。"""
+    """离线演示：计算→calculator；记住→remember_memory；其余直接回答（无 API Key 时可用）。"""
     user_text = "".join(
         m.content if isinstance(m.content, str) else "" for m in messages if m.type == "user"
     )
+    if "记住" in user_text:
+        content = user_text.split("记住", 1)[1].strip(" ：:，,。") or "用户要求记住一些信息"
+        return [
+            AIMessage(
+                content="好的，我来记下。",
+                tool_calls=[
+                    {
+                        "name": "remember_memory",
+                        "args": {"content": content, "type": "fact"},
+                        "id": "demo-mem-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="已记住。"),
+        ]
     if any(k in user_text for k in ("计算", "1+2", "2*3")):
         return [
             AIMessage(

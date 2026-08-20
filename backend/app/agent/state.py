@@ -18,3 +18,5 @@ class AgentState(TypedDict, total=False):
     tool_call_count: int  # 工具调用次数（护栏）
     usage_total: dict[str, int]  # token 用量汇总
     final_answer: str | None
+    summary: str  # 短期记忆滚动摘要（窗口超限时压缩生成）
+    memory_context: str  # 长期记忆检索注入（load_context 节点产出）

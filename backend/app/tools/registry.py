@@ -1,10 +1,12 @@
-"""工具注册表：本地工具与 MCP 工具（M2）的统一入口。"""
+"""工具注册表：本地工具与 MCP 工具的统一入口。"""
 
+import uuid
 from dataclasses import dataclass
 
 from langchain_core.tools import BaseTool
 
 from app.tools.local import calculator, get_current_time
+from app.tools.memory_tools import build_memory_tools
 
 
 @dataclass
@@ -34,8 +36,11 @@ class ToolRegistry:
         return [m.tool for n, m in self._tools.items() if names is None or n in names]
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(thread_id: uuid.UUID | None = None) -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(calculator.name, ToolMeta(tool=calculator))
     reg.register(get_current_time.name, ToolMeta(tool=get_current_time))
+    remember, forget = build_memory_tools(thread_id)
+    reg.register(remember.name, ToolMeta(tool=remember))
+    reg.register(forget.name, ToolMeta(tool=forget))
     return reg

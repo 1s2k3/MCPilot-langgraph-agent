@@ -1,4 +1,4 @@
-"""运行管理：后台任务执行图、事件总线注册、SSE 回放、取消。"""
+"""运行管理：后台任务执行图、事件总线注册、SSE 回放、取消、checkpoint 接线。"""
 
 import asyncio
 import time
@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
+from app.agent.checkpoint import get_checkpointer
 from app.agent.graph import GraphContext, build_graph
 from app.core.config import get_settings
 from app.core.errors import AppError
@@ -20,23 +21,65 @@ from app.events.models import Event
 from app.llm.anthropic import build_anthropic_model
 from app.llm.base import resolve_llm_config
 from app.llm.scripted import ScriptedChatModel, demo_responder
+from app.memory.extractor import store_extracted_memories
 from app.tools.mcp_client import mcp_manager
 from app.tools.registry import build_registry
 
 logger = get_logger(__name__)
 
 _TERMINAL = ("completed", "failed", "cancelled")
+_LLM_NODES = ("planner", "executor", "reflector", "finalizer", "memory_extractor", "judge")
 
 
-def build_executor_llm(agent_row: Agent) -> object:
-    """executor 节点 LLM：无 API Key 或显式 scripted 模式时用脚本化假 LLM。"""
+def build_node_llms(agent_row: Agent) -> dict[str, object]:
+    """按节点构建 LLM 实例。scripted 模式每个节点独立实例（避免脚本队列串扰）。"""
     s = get_settings()
     if s.scripted_llm or s.anthropic_api_key is None:
         if not s.scripted_llm:
             logger.warning("no_anthropic_key_using_scripted")
-        return ScriptedChatModel(responder=demo_responder)
-    cfg = resolve_llm_config("executor", (agent_row.node_models or {}).get("executor"))
-    return build_anthropic_model(cfg)
+        return {
+            "executor": ScriptedChatModel(responder=demo_responder),
+            "planner": ScriptedChatModel(),
+            "reflector": ScriptedChatModel(),
+            "finalizer": ScriptedChatModel(),
+            "memory_extractor": ScriptedChatModel(),
+            "judge": ScriptedChatModel(),
+        }
+    return {
+        node: build_anthropic_model(
+            resolve_llm_config(node, (agent_row.node_models or {}).get(node))
+        )
+        for node in _LLM_NODES
+    }
+
+
+def sanitize_state(values: dict) -> dict:
+    """state_snapshot 事件用脱敏视图：消息截断、工具参数保留但体积受限。"""
+    out: dict = {}
+    for key, value in values.items():
+        if key == "messages":
+            out["messages"] = [_msg_brief(m) for m in value]
+        elif key == "summary":
+            out["summary"] = (value or "")[:500]
+        elif key == "memory_context":
+            out["memory_context"] = (value or "")[:1000]
+        else:
+            out[key] = value
+    return out
+
+
+def _msg_brief(m) -> dict:
+    content = m.content
+    brief: dict = {"role": m.type}
+    if isinstance(content, str):
+        brief["content"] = content[:2000]
+    else:
+        brief["content"] = str(content)[:500]
+    if getattr(m, "tool_calls", None):
+        brief["tool_calls"] = [
+            {"name": tc.get("name"), "args": tc.get("args")} for tc in m.tool_calls
+        ]
+    return brief
 
 
 async def _write_message(
@@ -61,6 +104,19 @@ async def _fail_run(
     await bus.publish(bus.next_event("run_end", {"status": "failed", "error": run.error}))
 
 
+async def _post_run_memory_extraction(
+    run_id: uuid.UUID, thread_id: uuid.UUID, llm, user_input: str, answer: str
+) -> None:
+    """运行结束后的异步长期记忆提取（best-effort，不发布事件、不影响 run 状态）。"""
+    try:
+        conversation = f"用户: {user_input}\n助手: {answer[:2000]}"
+        written = await store_extracted_memories(thread_id, run_id, llm, conversation)
+        if written:
+            logger.info("memory_extracted", run_id=str(run_id), written=written)
+    except Exception:  # noqa: BLE001
+        logger.warning("memory_extraction_task_failed", run_id=str(run_id))
+
+
 async def execute_run(
     run_id: uuid.UUID,
     thread_id: uuid.UUID,
@@ -76,10 +132,11 @@ async def execute_run(
         "max_total_tool_calls": s.max_total_tool_calls,
         **(agent.budgets or {}),
     }
-    registry = build_registry()
+    registry = build_registry(thread_id)
     for name, meta in mcp_manager.tools().items():  # 注入 MCP 工具（带 server 前缀）
         registry.register(name, meta)
-    llm = build_executor_llm(agent)
+    llms = build_node_llms(agent)
+    checkpointer = await get_checkpointer()  # None = 数据库不可达（降级，无持久化）
 
     async with SessionLocal() as session:
         run = await session.get(Run, run_id)
@@ -102,7 +159,7 @@ async def execute_run(
             await session.commit()
 
             ctx = GraphContext(
-                llm_executor=llm,
+                llm_executor=llms["executor"],
                 registry=registry,
                 system_prompt=agent.system_prompt or "",
                 bus=bus,
@@ -110,15 +167,25 @@ async def execute_run(
                 thread_id=thread_id,
                 budgets=budgets,
                 session=session,
+                window=s.short_term_window,
             )
-            graph = build_graph(ctx)
+            graph = build_graph(ctx, checkpointer=checkpointer)
             config = {"configurable": {"thread_id": str(thread_id)}}
             async with asyncio.timeout(s.run_timeout_seconds):
-                # 事件由节点内经 bus 直接发布（SSE + 落库），此处消费 custom 通道即可
-                async for _ in graph.astream(
-                    {"messages": [("user", user_input)]}, config=config, stream_mode="custom"
+                # updates 模式：每个节点结束产出 (node, state) → state_snapshot 事件
+                async for chunk in graph.astream(
+                    {"messages": [("user", user_input)]},
+                    config=config,
+                    stream_mode=["updates"],
                 ):
-                    pass
+                    if isinstance(chunk, tuple) and len(chunk) == 2:
+                        node_name, values = chunk
+                        await bus.publish(
+                            bus.next_event(
+                                "state_snapshot",
+                                {"node": node_name, "state": sanitize_state(values)},
+                            )
+                        )
 
             final_state = await graph.aget_state(config)
             values = final_state.values or {}
@@ -143,6 +210,12 @@ async def execute_run(
                         "latency_ms": run.latency_ms,
                         "usage": run.usage,
                     },
+                )
+            )
+            # 异步长期记忆提取（不阻塞 run 收尾）
+            asyncio.create_task(
+                _post_run_memory_extraction(
+                    run_id, thread_id, llms["memory_extractor"], user_input, answer
                 )
             )
         except asyncio.CancelledError:

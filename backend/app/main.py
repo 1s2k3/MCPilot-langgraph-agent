@@ -14,9 +14,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agent.checkpoint import close_checkpointer, get_checkpointer
 from app.api.agents import router as agents_router
 from app.api.health import router as health_router
 from app.api.mcp import router as mcp_router
+from app.api.memory import router as memory_router
 from app.api.runs import router as runs_router
 from app.api.threads import router as threads_router
 from app.api.tools import router as tools_router
@@ -40,7 +42,9 @@ async def lifespan(app: FastAPI):
         await mcp_manager.refresh()  # MCP 失联降级，不阻断启动
     except Exception:  # noqa: BLE001
         logger.warning("mcp_refresh_failed_on_startup")
+    await get_checkpointer()  # 初始化失败内部降级（checkpoint 禁用），不阻断启动
     yield
+    await close_checkpointer()
     logger.info("shutdown")
 
 
@@ -60,6 +64,7 @@ app.include_router(threads_router, prefix="/api")
 app.include_router(runs_router, prefix="/api")
 app.include_router(mcp_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
+app.include_router(memory_router, prefix="/api")
 
 
 @app.exception_handler(AppError)
