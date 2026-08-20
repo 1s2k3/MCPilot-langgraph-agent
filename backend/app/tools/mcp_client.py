@@ -31,7 +31,9 @@ def build_connection_config(row: McpServer) -> dict:
         if not row.command:
             raise ValueError(f"stdio 传输需要 command: {row.name}")
         cfg: dict = {"transport": "stdio", "command": row.command, "args": row.args or []}
-        if row.env:
+        if row.env_encrypted:
+            cfg["env"] = json.loads(decrypt_secret(row.env_encrypted))
+        elif row.env:  # 兼容迁移前的明文遗留
             cfg["env"] = row.env
         return cfg
     if row.transport == "streamable_http":

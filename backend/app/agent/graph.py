@@ -82,8 +82,9 @@ def _brief(m) -> dict:
     else:
         brief["content"] = str(content)[:500]
     if getattr(m, "tool_calls", None):
+        # 评审证据视图同样脱敏（安全评审发现 3）
         brief["tool_calls"] = [
-            {"name": tc.get("name"), "args": tc.get("args")} for tc in m.tool_calls
+            {"name": tc.get("name"), "args": mask_secrets(tc.get("args"))} for tc in m.tool_calls
         ]
     return brief
 

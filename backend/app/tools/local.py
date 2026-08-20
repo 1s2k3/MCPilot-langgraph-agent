@@ -19,7 +19,14 @@ _ALLOWED_BIN_OPS = {
 _ALLOWED_UNARY_OPS = {ast.USub: operator.neg, ast.UAdd: operator.pos}
 
 
+_MAX_EXPR_LEN = 100  # 表达式长度上限
+_MAX_OPERAND = 10**30  # 操作数绝对值上限（防大整数 DoS，安全评审发现 5）
+_MAX_EXPONENT = 1024  # 指数绝对值上限（防天文级 pow）
+
+
 def _safe_eval(expression: str) -> float:
+    if len(expression) > _MAX_EXPR_LEN:
+        raise ValueError("表达式过长")
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
@@ -29,9 +36,21 @@ def _safe_eval(expression: str) -> float:
         if isinstance(node, ast.Expression):
             return _eval(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            if abs(node.value) > _MAX_OPERAND:
+                raise ValueError("数值过大")
             return node.value
         if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_BIN_OPS:
-            return _ALLOWED_BIN_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+            if type(node.op) is ast.Pow:
+                # 指数必须先于求值做界检查：9**9**9 的右子树先求值会先爆炸
+                exp = node.right
+                if isinstance(exp, ast.UnaryOp) and type(exp.op) in _ALLOWED_UNARY_OPS:
+                    exp = exp.operand
+                if not (isinstance(exp, ast.Constant) and isinstance(exp.value, int)):
+                    raise ValueError("指数必须是整数常量")
+                if abs(exp.value) > _MAX_EXPONENT:
+                    raise ValueError("指数过大")
+            left, right = _eval(node.left), _eval(node.right)
+            return _ALLOWED_BIN_OPS[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp) and type(node.op) in _ALLOWED_UNARY_OPS:
             return _ALLOWED_UNARY_OPS[type(node.op)](_eval(node.operand))
         raise ValueError(f"不允许的表达式元素: {type(node).__name__}")

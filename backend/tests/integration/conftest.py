@@ -10,8 +10,10 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 # 必须在任何 app 模块导入前设置：集成测试用 ScriptedLLM 确定性驱动 + 密钥加密可用
+# + 允许私有网段 MCP url（测试在本机起 demo server）
 os.environ.setdefault("SCRIPTED_LLM", "true")
 os.environ.setdefault("APP_MASTER_KEY", Fernet.generate_key().decode())
+os.environ.setdefault("ALLOW_PRIVATE_MCP_URLS", "true")
 
 
 @pytest.fixture(scope="session")

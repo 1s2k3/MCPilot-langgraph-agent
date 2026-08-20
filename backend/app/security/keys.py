@@ -42,11 +42,11 @@ def decrypt_secret(ciphertext: str) -> str:
         ) from exc
 
 
-def mask_key(secret: str, keep: int = 4) -> str:
-    """掩码展示：sk-…abcd（长度不足时全掩）。"""
-    if len(secret) <= keep + 4:
+def mask_key(secret: str) -> str:
+    """掩码展示：只保留后 4 位（不泄漏前缀类型特征，安全评审发现 7）。"""
+    if len(secret) <= 4:
         return "***"
-    return f"{secret[:keep]}…{secret[-4:]}"
+    return f"***{secret[-4:]}"
 
 
 async def get_provider_key(provider: str) -> str | None:

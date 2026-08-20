@@ -1,6 +1,6 @@
 # MCP Agent Platform — 开发框架（v1）
 
-> 状态：待评审。评审通过后按 §12 里程碑开发。
+> 状态：已评审、已交付（M0–M8，2026-08-20）。实现偏差见 §16。
 > 本文档定义 v1 的架构、选型、模块设计、数据模型、API 契约与开发计划。
 > 全新项目：不修改、不依赖任何已有 Agent 项目（如 SSK-agent、ai-project）的代码。
 
@@ -728,3 +728,5 @@ services:
 - 集成测试需 PostgreSQL（本地无 Docker 时自动跳过；CI 全量执行）
 - 真实 LLM 路径（Anthropic）未经线上验证（本机无 API Key）；scripted 路径全链路确定性覆盖
 - HITL 审批无超时（人工决议等待不限时，可 cancel）
+
+8. **安全评审加固（M8，评审后修复）**：ADMIN_TOKEN 网关中间件接线（发现 1）；MCP command 白名单 + SSRF 私网拒绝 + env 加密（发现 2/4）；脱敏贯穿回喂/checkpoint/事件链路 + 标量密钥形态检测（发现 3）；calculator 指数界检查（发现 5）；客户端固定错误文案（发现 6）；掩码不泄漏前缀（发现 7）；修复 build_anthropic_model api_key 参数缺失（评审附带发现，真实 LLM 路径阻断 bug）。

@@ -180,7 +180,8 @@ class McpServer(Base):
     args: Mapped[list | None] = mapped_column(JSONB, default=list)  # stdio 用
     url: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # 远程用
     headers_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    env: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    env_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)  # env 加密存储（0002）
+    env: Mapped[dict | None] = mapped_column(JSONB, default=dict)  # 遗留：非敏感透传，不再写入
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     tool_allowlist: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # None=全部
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -65,7 +65,7 @@ export interface McpServerView {
   command: string | null;
   args: string[] | null;
   url: string | null;
-  env: Record<string, string> | null;
+  env_masked: Record<string, string>; // 加密存储，只返回掩码
   enabled: boolean;
   tool_allowlist: string[] | null;
   headers_masked: Record<string, string>;

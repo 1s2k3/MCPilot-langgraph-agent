@@ -29,6 +29,30 @@ def test_mask_secrets_leaves_plain_values() -> None:
     assert mask_secrets({"a": {"b": [1, 2, "x"]}}) == {"a": {"b": [1, 2, "x"]}}
 
 
+def test_mask_secrets_scalar_value_patterns() -> None:
+    # 标量值模式检测（安全评审发现 3 加固）
+    assert mask_secrets({"data": "token sk-ant-abc1234567890xyz"}) == {"data": "***"}
+    assert mask_secrets({"data": "ghp_abcdefghijklmnopqrstuvwxyz"}) == {"data": "***"}
+    assert mask_secrets({"data": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"}) == {"data": "***"}
+    assert mask_secrets({"cookie": "session=abc", "session": "x", "auth": "y"}) == {
+        "cookie": "***",
+        "session": "***",
+        "auth": "***",
+    }
+    # 普通文本不受影响
+    assert mask_secrets({"data": "普通的一句话"}) == {"data": "普通的一句话"}
+
+
+def test_mask_secrets_deep_structures_masked_not_passed() -> None:
+    deep = {"k": "value"}
+    for _ in range(12):
+        deep = {"nested": deep}
+    out = mask_secrets(deep)
+    for _ in range(9):
+        out = out["nested"]
+    assert out == "***"
+
+
 # ---- 规范化 ----
 def test_normalize_str_result() -> None:
     assert normalize_result("hello") == {"ok": True, "data": "hello"}
@@ -82,6 +106,18 @@ def test_calculator_rejects_dangerous_input() -> None:
             raise AssertionError(f"应当拒绝: {expr}")
         except ValueError:
             pass
+
+
+def test_calculator_dos_limits() -> None:
+    # DoS 防护（安全评审发现 5）：指数界检查先于求值，禁止嵌套幂
+    for expr in ("9**9**9", "2**2000", "9" * 60):
+        try:
+            _safe_eval(expr)
+            raise AssertionError(f"应当拒绝: {expr[:20]}…")
+        except ValueError:
+            pass
+    # 合法边界仍可用
+    assert _safe_eval("2**10") == 1024
 
 
 def test_calculator_division_by_zero_is_error() -> None:

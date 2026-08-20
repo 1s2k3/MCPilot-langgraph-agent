@@ -72,9 +72,12 @@ CI 门禁（GitHub Actions）：lint + unit + integration（pgvector 服务 + fa
 
 ## 安全
 
-- API Key 与 MCP 凭据 Fernet 加密落库，**写后不可读**，响应只返回掩码
-- 工具参数/结果脱敏（敏感键打码）与截断；`deny` 工具在绑定阶段隐藏（隐藏优于拦截）
-- `LANGGRAPH_STRICT_MSGPACK=true` checkpoint 反序列化防护；可选 `ADMIN_TOKEN` 网关鉴权
+- **网关鉴权**：配置 `ADMIN_TOKEN` 后 `/api/*` 强制校验（请求头 `X-Admin-Token` 或查询参数 `admin_token`，SSE 兼容）；前端 401 自动提示输入
+- API Key、MCP headers/env 一律 Fernet 加密落库，**写后不可读**，响应只返回掩码（不泄漏前缀）
+- **MCP 入口防护**：stdio command 可执行白名单（`MCP_COMMAND_ALLOWLIST`）；streamable_http 仅 http(s) 且默认拒绝回环/私有/保留地址（`ALLOW_PRIVATE_MCP_URLS` 仅供本地开发豁免）
+- 工具参数/结果脱敏（敏感键 + 常见密钥形态标量检测 + 超深结构打码）贯穿**落库、回喂 LLM、checkpoint、事件回放**四条链路；`deny` 工具在绑定阶段隐藏（隐藏优于拦截）
+- calculator AST 白名单求值 + 长度/操作数/指数界检查（防大整数 DoS）
+- `LANGGRAPH_STRICT_MSGPACK=true` checkpoint 反序列化防护；错误响应只返回固定文案（异常细节仅进服务端日志）
 - 工具结果标注为不可信外部数据（提示注入缓解）；v1 工具面只读（无文件写/删）
 
 ## 环境变量

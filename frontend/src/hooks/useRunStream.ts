@@ -4,6 +4,7 @@
  * 服务端以 Last-Event-ID(=seq) 幂等补拉，EventSource 原生支持断线重连语义。
  */
 import { useEffect, useReducer } from "react";
+import { adminQueryParam } from "../api/client";
 import type {
   InterruptView,
   PlanStepView,
@@ -125,7 +126,8 @@ export function useRunStream(threadId: string | null, runId: string | null) {
       return;
     }
     dispatch({ type: "@@reset" });
-    const es = new EventSource(`/api/threads/${threadId}/runs/${runId}/stream`);
+    const url = adminQueryParam(`/api/threads/${threadId}/runs/${runId}/stream`);
+    const es = new EventSource(url);
     es.onmessage = (e) => {
       try {
         const evt = JSON.parse(e.data) as PlatformEvent;

@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.llm.base import LLMConfig
 
 
-def build_anthropic_model(cfg: LLMConfig) -> ChatAnthropic:
+def build_anthropic_model(cfg: LLMConfig, api_key: str | None = None) -> ChatAnthropic:
     s = get_settings()
     kwargs: dict[str, Any] = {
         "model": cfg.model or s.default_model,
@@ -26,6 +26,10 @@ def build_anthropic_model(cfg: LLMConfig) -> ChatAnthropic:
         "thinking": {"type": "adaptive", "display": "summarized"},
         "output_config": {"effort": cfg.effort},
     }
-    if s.anthropic_api_key is not None:
-        kwargs["anthropic_api_key"] = s.anthropic_api_key.get_secret_value()
+    # 密钥优先级：调用方传入（DB api_keys 兜底）> 环境变量
+    key = api_key
+    if key is None and s.anthropic_api_key is not None:
+        key = s.anthropic_api_key.get_secret_value()
+    if key is not None:
+        kwargs["anthropic_api_key"] = key
     return ChatAnthropic(**kwargs)

@@ -63,6 +63,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def admin_token_middleware(request: Request, call_next):
+    """网关鉴权（§9）：配置 ADMIN_TOKEN 时，/api/* 必须携带
+    X-Admin-Token 头或 ?admin_token= 查询参数（SSE EventSource 无法自定义头）。"""
+    token = settings.admin_token
+    if token is not None and request.url.path.startswith("/api"):
+        provided = request.headers.get("x-admin-token") or request.query_params.get("admin_token")
+        if provided is None or provided != token.get_secret_value():
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "unauthorized",
+                        "message": "无效的管理令牌",
+                        "retryable": False,
+                        "details": {},
+                    }
+                },
+            )
+    return await call_next(request)
+
+
 app.include_router(health_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
 app.include_router(threads_router, prefix="/api")
@@ -97,12 +120,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
             },
         )
     logger.exception("unhandled_error", path=request.url.path)
+    # 客户端只返回固定文案，原始异常仅进服务端日志（安全评审发现 6）
     return JSONResponse(
         status_code=500,
         content={
             "error": {
                 "code": "internal_error",
-                "message": str(exc)[:300] or "内部错误",
+                "message": "内部错误（详见服务端日志）",
                 "retryable": False,
                 "details": {},
             }

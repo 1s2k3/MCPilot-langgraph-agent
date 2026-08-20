@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # ---- MCP ----
     seed_demo_mcp: bool = True  # 首次启动播种演示 server（mcp-demo）
     mcp_demo_url: str | None = None  # 设置后 demo server 走 streamable_http（compose 用）
+    # stdio 可执行白名单（防任意命令执行）；逗号分隔
+    mcp_command_allowlist: str = "node,python,uvx,npx"
+    # 允许私有网段/回环地址的 MCP url（本地开发/集成测试）；生产保持 false
+    allow_private_mcp_urls: bool = False
 
     # ---- Observability ----
     langchain_tracing_v2: bool = False

@@ -44,5 +44,7 @@ def test_decrypt_rejects_wrong_key(monkeypatch) -> None:
 
 
 def test_mask_key() -> None:
-    assert mask_key("sk-ant-abcdef123456") == "sk-a…3456"
-    assert mask_key("short") == "***"
+    # 只保留后 4 位，不泄漏前缀类型特征（安全评审发现 7）
+    assert mask_key("sk-ant-abcdef123456") == "***3456"
+    assert mask_key("short") == "***hort"
+    assert mask_key("abc") == "***"

@@ -15,13 +15,31 @@ from app.db.models import ToolCall as ToolCallRow
 from app.events.bus import EventBus
 from app.tools.registry import ToolMeta
 
-_SENSITIVE_KEY_PARTS = ("key", "token", "secret", "password", "authorization", "credential")
+_SENSITIVE_KEY_PARTS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+    "cookie",
+    "session",
+    "auth",
+)
+# 常见密钥形态（安全评审加固：标量值模式检测）
+_SENSITIVE_VALUE_PATTERNS = ("sk-", "ghp_", "AKIA", "Bearer ", "eyJ")
 
 
 def mask_secrets(obj, depth: int = 0):
-    """递归脱敏：键名含敏感词 → 值替换为 ***。"""
-    if depth > 8 or obj is None or isinstance(obj, (str, int, float, bool)):
+    """递归脱敏：敏感键名打码 + 标量值模式检测 + 超深一律打码（不放行）。"""
+    if obj is None or isinstance(obj, (bool, int, float)):
         return obj
+    if isinstance(obj, str):
+        if len(obj) > 12 and any(p in obj for p in _SENSITIVE_VALUE_PATTERNS):
+            return "***"
+        return obj
+    if depth > 8:
+        return "***"
     if isinstance(obj, dict):
         return {
             str(k): (
@@ -79,9 +97,15 @@ def store_result(normalized: dict, cap_bytes: int) -> tuple[dict, bool]:
     return {"ok": normalized.get("ok"), "truncated": True, "preview": raw[:cap_bytes]}, True
 
 
-def feedback_text(normalized: dict, cap_chars: int) -> str:
-    """回喂 LLM 的文本（截断预算，防上下文膨胀）。"""
-    data = normalized.get("data")
+def feedback_text(payload: dict, cap_chars: int) -> str:
+    """回喂 LLM 的文本（截断预算）。
+
+    注意：入参是 store_result 的脱敏版本 payload —— 回喂路径与落库路径共用同一脱敏结果
+    （安全评审发现 3 修复：此前回喂未脱敏）。
+    """
+    if payload.get("truncated"):
+        return f"{str(payload.get('preview', ''))[:cap_chars]}\n…（输出过长已截断）"
+    data = payload.get("data")
     text = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, indent=2)
     if len(text) > cap_chars:
         text = text[:cap_chars] + f"\n…（输出过长已截断，共 {len(text)} 字符）"
@@ -143,7 +167,7 @@ async def execute_tool_call(
             )
         )
         return ToolMessage(
-            content=feedback_text(normalized, settings.tool_feedback_cap_chars),
+            content=feedback_text(payload, settings.tool_feedback_cap_chars),
             tool_call_id=call_id,
             status="success",
         )

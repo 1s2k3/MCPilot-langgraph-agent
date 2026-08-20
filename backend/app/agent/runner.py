@@ -31,6 +31,7 @@ from app.llm.scripted import (
 )
 from app.memory.extractor import store_extracted_memories
 from app.security.keys import get_provider_key
+from app.tools.executor import mask_secrets
 from app.tools.mcp_client import mcp_manager
 from app.tools.registry import build_registry
 
@@ -96,8 +97,9 @@ def _msg_brief(m) -> dict:
     else:
         brief["content"] = str(content)[:500]
     if getattr(m, "tool_calls", None):
+        # state_snapshot 事件与 checkpoint 快照：工具参数同样脱敏（安全评审发现 3）
         brief["tool_calls"] = [
-            {"name": tc.get("name"), "args": tc.get("args")} for tc in m.tool_calls
+            {"name": tc.get("name"), "args": mask_secrets(tc.get("args"))} for tc in m.tool_calls
         ]
     return brief
 
@@ -286,9 +288,10 @@ async def execute_run(
         except AppError as exc:
             await _fail_run(run, bus, code=exc.code, message=exc.message)
             await session.commit()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("run_failed", run_id=str(run_id))
-            await _fail_run(run, bus, code="internal_error", message=str(exc)[:500])
+            # 客户端/落库只存固定文案，原始异常仅进服务端日志（安全评审发现 6）
+            await _fail_run(run, bus, code="internal_error", message="内部错误（详见服务端日志）")
             await session.commit()
 
 
