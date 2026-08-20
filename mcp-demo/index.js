@@ -1,9 +1,14 @@
 /**
  * 演示 MCP server：math / time / echo，只读工具面。
- * stdio 传输，由后端作为子进程拉起（见 app/tools/mcp_client.py）。
+ *
+ * 两种传输模式：
+ * - stdio（默认）：由后端作为子进程拉起（生产 Linux 容器 / CI）
+ * - HTTP：设置 MCP_DEMO_PORT 环境变量后监听该端口（Windows 本地开发 / docker compose）
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import http from "node:http";
 import { z } from "zod";
 
 const server = new McpServer({ name: "mcp-demo", version: "0.1.0" });
@@ -33,5 +38,26 @@ server.tool(
   async ({ text }) => ({ content: [{ type: "text", text }] }),
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+if (process.env.MCP_DEMO_PORT) {
+  const port = Number(process.env.MCP_DEMO_PORT);
+  const httpServer = http.createServer(async (req, res) => {
+    try {
+      // 官方 node:http 模式（SDK 文档示例）：无状态 transport 每次请求新建，
+      // handleRequest 自行完成响应写入（含长连接 POST 流的渐进式写回）
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on("close", () => transport.close());
+      await server.connect(transport);
+      await transport.handleRequest(req, res, rawBody ? JSON.parse(rawBody) : undefined);
+    } catch (err) {
+      res.statusCode = 500;
+      res.end(String(err));
+    }
+  });
+  httpServer.listen(port, () => console.error(`[mcp-demo] http 模式监听 :${port}/mcp`));
+} else {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

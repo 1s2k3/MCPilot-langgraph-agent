@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     tool_feedback_cap_chars: int = 20_000  # 回喂 LLM 的文本上限
     tool_timeout_seconds: int = 60  # 单次工具执行超时
 
+    # ---- MCP ----
+    seed_demo_mcp: bool = True  # 首次启动播种演示 server（mcp-demo）
+    mcp_demo_url: str | None = None  # 设置后 demo server 走 streamable_http（compose 用）
+
     # ---- Observability ----
     langchain_tracing_v2: bool = False
     langchain_api_key: SecretStr | None = None

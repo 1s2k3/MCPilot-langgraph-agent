@@ -16,7 +16,15 @@ services:
       timeout: 5s
       retries: 10
 
-  # api / web / mcp-demo 服务在 M2–M6 里程碑加入
+  mcp-demo:
+    build: ./mcp-demo
+    container_name: agent-platform-mcp-demo
+    environment:
+      MCP_DEMO_PORT: "8001"
+    expose:
+      - "8001"
+
+  # api / web 服务在 M3/M6 里程碑加入；api 通过 MCP_DEMO_URL=http://mcp-demo:8001/mcp 接入
 
 volumes:
   pgdata:

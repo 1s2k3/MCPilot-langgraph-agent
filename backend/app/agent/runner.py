@@ -20,6 +20,7 @@ from app.events.models import Event
 from app.llm.anthropic import build_anthropic_model
 from app.llm.base import resolve_llm_config
 from app.llm.scripted import ScriptedChatModel, demo_responder
+from app.tools.mcp_client import mcp_manager
 from app.tools.registry import build_registry
 
 logger = get_logger(__name__)
@@ -75,7 +76,9 @@ async def execute_run(
         "max_total_tool_calls": s.max_total_tool_calls,
         **(agent.budgets or {}),
     }
-    registry = build_registry()  # M2: 注入 MCP 工具
+    registry = build_registry()
+    for name, meta in mcp_manager.tools().items():  # 注入 MCP 工具（带 server 前缀）
+        registry.register(name, meta)
     llm = build_executor_llm(agent)
 
     async with SessionLocal() as session:

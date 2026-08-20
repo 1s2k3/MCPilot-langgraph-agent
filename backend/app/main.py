@@ -16,12 +16,15 @@ from fastapi.responses import JSONResponse
 
 from app.api.agents import router as agents_router
 from app.api.health import router as health_router
+from app.api.mcp import router as mcp_router
 from app.api.runs import router as runs_router
 from app.api.threads import router as threads_router
+from app.api.tools import router as tools_router
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.logging import get_logger, setup_logging
 from app.core.tracing import configure_tracing
+from app.tools.mcp_client import mcp_manager
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -33,6 +36,10 @@ async def lifespan(app: FastAPI):
     configure_tracing(settings)
     # 日志不打印凭据，只打印主机部分
     logger.info("startup", database_host=settings.database_url.split("@")[-1])
+    try:
+        await mcp_manager.refresh()  # MCP 失联降级，不阻断启动
+    except Exception:  # noqa: BLE001
+        logger.warning("mcp_refresh_failed_on_startup")
     yield
     logger.info("shutdown")
 
@@ -51,6 +58,8 @@ app.include_router(health_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
 app.include_router(threads_router, prefix="/api")
 app.include_router(runs_router, prefix="/api")
+app.include_router(mcp_router, prefix="/api")
+app.include_router(tools_router, prefix="/api")
 
 
 @app.exception_handler(AppError)
