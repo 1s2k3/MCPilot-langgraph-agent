@@ -46,6 +46,7 @@ export default function KeysPage() {
             onChange={(e) => setProvider(e.target.value)}
           >
             <option value="anthropic">anthropic</option>
+            <option value="deepseek">deepseek</option>
             <option value="langsmith">langsmith</option>
           </select>
           <input

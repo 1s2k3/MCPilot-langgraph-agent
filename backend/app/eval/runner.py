@@ -42,7 +42,9 @@ def _eval_policy(agent_row: Agent) -> dict:
     return {"rules": rules, "default": "allow" if default == "ask" else default}
 
 
-async def _run_single(entry: dict, agent_row: Agent, llms: dict) -> dict:
+async def _run_single(
+    entry: dict, agent_row: Agent, llms: dict, structured_fn: object | None = None
+) -> dict:
     """执行单条：返回轨迹与结果（状态/答案/工具序列/耗时/用量/计划/反思）。"""
     thread_id = uuid.uuid4()
     bus = EventBus(uuid.uuid4(), persist=False)
@@ -60,6 +62,7 @@ async def _run_single(entry: dict, agent_row: Agent, llms: dict) -> dict:
         thread_id=thread_id,
         session=None,
         tool_policy=_eval_policy(agent_row),
+        structured_fn=structured_fn,
     )
     graph = build_graph(ctx, checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": str(thread_id)}}
@@ -120,7 +123,7 @@ async def run_eval(eval_run_id: uuid.UUID) -> None:
             await session.commit()
             return
         entries = dataset.entries or []
-        llms = await build_node_llms(agent)
+        llms, _structured_fn = await build_node_llms(agent)
         erun.status = "running"
         erun.model_snapshot = {
             "agent": agent.name,
@@ -131,7 +134,7 @@ async def run_eval(eval_run_id: uuid.UUID) -> None:
 
         scores: list[dict] = []
         for index, entry in enumerate(entries):
-            result = await _run_single(entry, agent, llms)
+            result = await _run_single(entry, agent, llms, _structured_fn)
             tool_match = _sequence_match(
                 result["tool_sequence"], entry.get("expected_tool_calls") or []
             )

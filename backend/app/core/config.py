@@ -23,8 +23,13 @@ class Settings(BaseSettings):
     admin_token: SecretStr | None = None  # 可选网关级鉴权
 
     # ---- LLM ----
+    llm_provider: str = "anthropic"  # anthropic | deepseek
     anthropic_api_key: SecretStr | None = None
     default_model: str = "claude-opus-5"
+    # DeepSeek（OpenAI 兼容 API）
+    deepseek_api_key: SecretStr | None = None
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
     # 脚本化假 LLM（测试 / 离线演示 / LIVE_LLM=0 评估）；无 API Key 时自动生效
     scripted_llm: bool = False
     # 各节点可覆盖 {model, effort}；空 dict 表示用默认。effort 默认: executor=high, 其余=medium
@@ -86,6 +91,7 @@ class Settings(BaseSettings):
         "app_master_key",
         "admin_token",
         "anthropic_api_key",
+        "deepseek_api_key",
         "langchain_api_key",
         mode="before",
     )

@@ -33,3 +33,8 @@ def build_anthropic_model(cfg: LLMConfig, api_key: str | None = None) -> ChatAnt
     if key is not None:
         kwargs["anthropic_api_key"] = key
     return ChatAnthropic(**kwargs)
+
+
+def structured(model, schema):
+    """Anthropic 结构化输出：默认路径（底层走 output_config.format）。"""
+    return model.with_structured_output(schema)

@@ -41,26 +41,46 @@ _TERMINAL = ("completed", "failed", "cancelled")
 _LLM_NODES = ("planner", "executor", "reflector", "finalizer", "memory_extractor", "judge")
 
 
-async def build_node_llms(agent_row: Agent) -> dict[str, object]:
+async def build_node_llms(agent_row: Agent) -> tuple[dict[str, object], object | None]:
     """按节点构建 LLM 实例。scripted 模式每个节点独立实例（避免脚本队列串扰）。
 
-    API Key 解析顺序（§9）：环境变量 → DB 密钥（api_keys 表，provider=anthropic）→ 降级 scripted。
+    返回 (llms, structured_fn)：structured_fn 是 provider 相关的结构化输出适配；
+    scripted 模式为 None（ScriptedChatModel 自带实现）。
+
+    API Key 解析顺序（§9）：环境变量 → DB 密钥（api_keys 表）→ 降级 scripted。
     """
     s = get_settings()
     if s.scripted_llm:
-        return _scripted_llms()
-    api_key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
-    if api_key is None:
-        api_key = await get_provider_key("anthropic")
-    if api_key is None:
+        return _scripted_llms(), None
+    overrides = lambda node: (agent_row.node_models or {}).get(node)  # noqa: E731
+
+    if s.llm_provider == "deepseek":
+        from app.llm.deepseek import build_deepseek_model
+        from app.llm.deepseek import structured as ds_structured
+
+        key = s.deepseek_api_key.get_secret_value() if s.deepseek_api_key else None
+        if key is None:
+            key = await get_provider_key("deepseek")
+        if key is None:
+            logger.warning("no_deepseek_key_using_scripted")
+            return _scripted_llms(), None
+        return {
+            node: build_deepseek_model(resolve_llm_config(node, overrides(node)), api_key=key)
+            for node in _LLM_NODES
+        }, ds_structured
+
+    from app.llm.anthropic import structured as an_structured
+
+    key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
+    if key is None:
+        key = await get_provider_key("anthropic")
+    if key is None:
         logger.warning("no_anthropic_key_using_scripted")
-        return _scripted_llms()
+        return _scripted_llms(), None
     return {
-        node: build_anthropic_model(
-            resolve_llm_config(node, (agent_row.node_models or {}).get(node)), api_key=api_key
-        )
+        node: build_anthropic_model(resolve_llm_config(node, overrides(node)), api_key=key)
         for node in _LLM_NODES
-    }
+    }, an_structured
 
 
 def _scripted_llms() -> dict[str, object]:
@@ -157,7 +177,7 @@ async def execute_run(
     registry = build_registry(thread_id)
     for name, meta in mcp_manager.tools().items():  # 注入 MCP 工具（带 server 前缀）
         registry.register(name, meta)
-    llms = await build_node_llms(agent)
+    llms, structured_fn = await build_node_llms(agent)
     checkpointer = await get_checkpointer()  # None = 数据库不可达（降级，无持久化）
 
     async with SessionLocal() as session:
@@ -192,6 +212,7 @@ async def execute_run(
                 session=session,
                 window=s.short_term_window,
                 tool_policy=agent.tool_policy or {},
+                structured_fn=structured_fn,
             )
             graph = build_graph(ctx, checkpointer=checkpointer)
             config = {"configurable": {"thread_id": str(thread_id)}}

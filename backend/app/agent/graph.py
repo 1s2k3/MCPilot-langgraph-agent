@@ -116,6 +116,7 @@ class GraphContext:
     session: object = None  # 运行任务的 DB 会话（工具落库用）
     window: int = 20  # 短期记忆消息窗口
     tool_policy: dict = field(default_factory=dict)  # §5.9 权限策略
+    structured_fn: object = None  # provider 相关的结构化输出适配（None=模型自带）
 
 
 def build_graph(ctx: GraphContext, checkpointer=None):
@@ -128,6 +129,12 @@ def build_graph(ctx: GraphContext, checkpointer=None):
     async def _publish(type_: str, payload: dict | None = None) -> None:
         if ctx.bus is not None:
             await ctx.bus.publish(ctx.bus.next_event(type_, payload))
+
+    def _structured(model, schema):
+        """结构化输出链：provider 适配（deepseek → function_calling），scripted 用自带实现。"""
+        if ctx.structured_fn is not None:
+            return ctx.structured_fn(model, schema)
+        return model.with_structured_output(schema)
 
     async def _stream_llm(node: str, model, llm_input: list) -> AIMessage:
         """统一流式调用：llm_start/llm_delta/llm_end 事件 + usage。"""
@@ -180,7 +187,7 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             context["近期反思"] = reflection[-3:]
         msgs.append(HumanMessage(content=json.dumps(context, ensure_ascii=False, default=str)))
 
-        out = await ctx.llms["planner"].with_structured_output(Plan).ainvoke(msgs)
+        out = await _structured(ctx.llms["planner"], Plan).ainvoke(msgs)
         steps = [
             s.model_dump() | {"status": "pending", "attempts": 0, "feedback": []}
             for s in out.steps[:max_plan_steps]
@@ -354,10 +361,8 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             ensure_ascii=False,
             default=str,
         )
-        verdict = (
-            await ctx.llms["reflector"]
-            .with_structured_output(ReflectionVerdict)
-            .ainvoke([SystemMessage(content=_REFLECT_PROMPT), HumanMessage(content=evidence)])
+        verdict = await _structured(ctx.llms["reflector"], ReflectionVerdict).ainvoke(
+            [SystemMessage(content=_REFLECT_PROMPT), HumanMessage(content=evidence)]
         )
         entry = {
             "step_id": step["id"],

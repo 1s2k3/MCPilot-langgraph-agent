@@ -25,12 +25,16 @@ DEFAULT_EFFORTS = {
 
 
 def resolve_llm_config(node: str, node_overrides: dict | None) -> LLMConfig:
-    """合并三层配置：全局默认 → settings.node_models[node] → agent.node_models[node]。"""
+    """合并三层配置：全局默认 → settings.node_models[node] → agent.node_models[node]。
+
+    默认模型随 provider 变化（deepseek → deepseek-v4-flash；anthropic → claude-opus-5）。
+    """
     from app.core.config import get_settings
 
     s = get_settings()
+    default_model = s.deepseek_model if s.llm_provider == "deepseek" else s.default_model
     base: dict = {
-        "model": s.default_model,
+        "model": default_model,
         "effort": DEFAULT_EFFORTS.get(node, "medium"),
     }
     base.update(s.node_models.get(node, {}))
