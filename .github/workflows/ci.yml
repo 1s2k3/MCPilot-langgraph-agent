@@ -61,5 +61,6 @@ jobs:
           path: ~/.cache/fastembed
           key: fastembed-all-MiniLM-L6-v2
       - run: pip install -e "backend[dev]"
+      - run: cd mcp-demo && npm ci
       - run: cd backend && alembic upgrade head
       - run: pytest backend/tests/integration -q
