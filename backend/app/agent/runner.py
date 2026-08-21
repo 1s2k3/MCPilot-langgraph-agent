@@ -152,7 +152,8 @@ async def _post_run_memory_extraction(
     """运行结束后的异步长期记忆提取（best-effort，不发布事件、不影响 run 状态）。"""
     try:
         conversation = f"用户: {user_input}\n助手: {answer[:2000]}"
-        written = await store_extracted_memories(thread_id, run_id, llm, conversation)
+        async with asyncio.timeout(30):
+            written = await store_extracted_memories(thread_id, run_id, llm, conversation)
         if written:
             logger.info("memory_extracted", run_id=str(run_id), written=written)
     except Exception:  # noqa: BLE001
@@ -286,12 +287,19 @@ async def execute_run(
                     },
                 )
             )
-            # 异步长期记忆提取（不阻塞 run 收尾）
-            asyncio.create_task(
+            # 异步长期记忆提取（不阻塞 run 收尾，异常隔离）
+            def _memory_task_done(task: asyncio.Task) -> None:
+                try:
+                    task.result()
+                except Exception:  # noqa: BLE001
+                    logger.warning("memory_extraction_bg_task_failed", run_id=str(run_id))
+
+            bg_task = asyncio.create_task(
                 _post_run_memory_extraction(
                     run_id, thread_id, llms["memory_extractor"], user_input, answer
                 )
             )
+            bg_task.add_done_callback(_memory_task_done)
         except asyncio.CancelledError:
             run.status = "cancelled"
             run.finished_at = datetime.now(UTC)

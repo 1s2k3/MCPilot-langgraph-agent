@@ -28,11 +28,14 @@ from langgraph.types import interrupt
 from app.agent.schemas import Plan, PlanStep, ReflectionVerdict
 from app.agent.state import AgentState
 from app.core.errors import AppError
+from app.core.logging import get_logger
 from app.events.bus import EventBus
 from app.memory.retriever import memory_context_text, retrieve_memories
 from app.tools.executor import execute_tool_call, mask_secrets, to_json_safe
 from app.tools.policy import resolve_tool_action
 from app.tools.registry import ToolRegistry
+
+logger = get_logger(__name__)
 
 _USAGE_KEYS = (
     "input_tokens",
@@ -276,7 +279,14 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             llm_input.append(SystemMessage(content=memory_ctx))
         llm_input.extend(messages[-ctx.window :])
 
-        message = await _stream_llm("executor", model, llm_input)
+        try:
+            message = await _stream_llm("executor", model, llm_input)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("executor_llm_call_failed", error=str(exc)[:200])
+            message = AIMessage(
+                content=f"执行步骤时出错: {str(exc)[:100]}",
+                tool_calls=[],
+            )
         result.update({"messages": [message]})
         result.update(_bump(state, _usage_dict(getattr(message, "usage_metadata", None))))
         return result
@@ -448,11 +458,15 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             ensure_ascii=False,
             default=str,
         )
-        message = await _stream_llm(
-            "finalizer",
-            ctx.llms["finalizer"],
-            [SystemMessage(content=_FINALIZER_PROMPT), HumanMessage(content=context)],
-        )
+        try:
+            message = await _stream_llm(
+                "finalizer",
+                ctx.llms["finalizer"],
+                [SystemMessage(content=_FINALIZER_PROMPT), HumanMessage(content=context)],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("finalizer_llm_call_failed", error=str(exc)[:200])
+            message = AIMessage(content=f"任务完成时出错: {str(exc)[:100]}")
         text = message.content if isinstance(message.content, str) else ""
         result = _bump(state, _usage_dict(getattr(message, "usage_metadata", None)))
         result.update({"messages": [message], "final_answer": text})
