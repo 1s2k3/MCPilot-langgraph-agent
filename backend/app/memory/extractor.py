@@ -74,24 +74,13 @@ async def store_single_memory(
 async def store_extracted_memories(
     thread_id: uuid.UUID | None, source_run_id: uuid.UUID | None, llm, conversation: str
 ) -> int:
-    """提取 + 批量落库。返回新增条数。"""
+    """提取 + 逐条独立落库（每条独立事务，FK 违规不影响其他条目）。返回新增条数。"""
     items = await extract_memories(llm, conversation)
     if not items:
         return 0
     written = 0
-    async with SessionLocal() as session:
-        for item in items:
-            try:
-                written += await _upsert(session, thread_id, source_run_id, item)
-            except Exception:  # noqa: BLE001
-                logger.warning("memory_upsert_failed", content=item.content[:50])
-                await session.rollback()
-        try:
-            await session.commit()
-        except IntegrityError:
-            logger.warning("memory_commit_fk_violation")
-            await session.rollback()
-            return 0
+    for item in items:
+        written += await store_single_memory(thread_id, source_run_id, item)
     return written
 
 

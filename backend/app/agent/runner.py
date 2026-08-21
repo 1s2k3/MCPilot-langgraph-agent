@@ -151,6 +151,16 @@ async def _post_run_memory_extraction(
 ) -> None:
     """运行结束后的异步长期记忆提取（best-effort，不发布事件、不影响 run 状态）。"""
     try:
+        from app.db.models import Thread
+        from app.db.session import SessionLocal
+
+        async with SessionLocal() as session:
+            thread = await session.get(Thread, thread_id)
+            if thread is None:
+                logger.warning(
+                    "thread_deleted_skipping_memory_extraction", thread_id=str(thread_id)
+                )
+                return
         conversation = f"用户: {user_input}\n助手: {answer[:2000]}"
         async with asyncio.timeout(30):
             written = await store_extracted_memories(thread_id, run_id, llm, conversation)
