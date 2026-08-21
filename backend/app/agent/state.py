@@ -11,7 +11,8 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], add_messages]  # 标准 reducer：dict→BaseMessage 转换（Studio/Server 输入）
+    # 标准 reducer：dict→BaseMessage 转换（Studio/Server 输入）
+    messages: Annotated[list[AnyMessage], add_messages]
     iteration_count: int  # LLM 调用次数（护栏）
     tool_call_count: int  # 工具调用次数（护栏）
     usage_total: dict[str, int]  # token 用量汇总
