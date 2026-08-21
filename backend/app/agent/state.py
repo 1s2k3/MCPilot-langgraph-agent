@@ -4,14 +4,14 @@ M5 待扩展：tool_approvals（会话级工具授权，随 checkpoint 持久化
 注意：所有值必须 JSON 可序列化（checkpoint 持久化要求）。
 """
 
-import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], operator.add]
+    messages: Annotated[list[AnyMessage], add_messages]  # 标准 reducer：dict→BaseMessage 转换（Studio/Server 输入）
     iteration_count: int  # LLM 调用次数（护栏）
     tool_call_count: int  # 工具调用次数（护栏）
     usage_total: dict[str, int]  # token 用量汇总

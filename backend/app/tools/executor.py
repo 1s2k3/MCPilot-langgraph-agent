@@ -112,11 +112,17 @@ def feedback_text(payload: dict, cap_chars: int) -> str:
     return text
 
 
+async def _emit(bus: EventBus | None, type_: str, payload: dict) -> None:
+    """事件发布（bus 为空时跳过：Studio/图级测试路径无事件总线）。"""
+    if bus is not None:
+        await bus.publish(bus.next_event(type_, payload))
+
+
 async def execute_tool_call(
     meta: ToolMeta,
     tool_call: dict,
     *,
-    bus: EventBus,
+    bus: EventBus | None,
     run_id: uuid.UUID,
     session,
 ) -> ToolMessage:
@@ -138,11 +144,10 @@ async def execute_tool_call(
     if session is not None:  # 无 DB 会话时（图级测试）跳过落库，执行与事件照常
         session.add(row)
         await session.commit()
-    await bus.publish(
-        bus.next_event(
-            "tool_call_start",
-            {"id": str(row.id), "name": name, "server": meta.server, "args": masked_args},
-        )
+    await _emit(
+        bus,
+        "tool_call_start",
+        {"id": str(row.id), "name": name, "server": meta.server, "args": masked_args},
     )
 
     start = time.perf_counter()
@@ -154,17 +159,16 @@ async def execute_tool_call(
         row.result = payload
         row.status = "succeeded"
         row.truncated = truncated
-        await bus.publish(
-            bus.next_event(
-                "tool_call_end",
-                {
-                    "id": str(row.id),
-                    "name": name,
-                    "status": row.status,
-                    "duration_ms": int((time.perf_counter() - start) * 1000),
-                    "truncated": truncated,
-                },
-            )
+        await _emit(
+            bus,
+            "tool_call_end",
+            {
+                "id": str(row.id),
+                "name": name,
+                "status": row.status,
+                "duration_ms": int((time.perf_counter() - start) * 1000),
+                "truncated": truncated,
+            },
         )
         return ToolMessage(
             content=feedback_text(payload, settings.tool_feedback_cap_chars),
@@ -174,21 +178,19 @@ async def execute_tool_call(
     except TimeoutError:
         row.status = "failed"
         row.error = "工具执行超时"
-        await bus.publish(
-            bus.next_event(
-                "tool_call_end",
-                {"id": str(row.id), "name": name, "status": "failed", "error": row.error},
-            )
+        await _emit(
+            bus,
+            "tool_call_end",
+            {"id": str(row.id), "name": name, "status": "failed", "error": row.error},
         )
         return ToolMessage(content=f"工具 {name} 执行超时", tool_call_id=call_id, status="error")
     except Exception as exc:  # noqa: BLE001
         row.status = "failed"
         row.error = str(exc)[:1000]
-        await bus.publish(
-            bus.next_event(
-                "tool_call_end",
-                {"id": str(row.id), "name": name, "status": "failed", "error": row.error},
-            )
+        await _emit(
+            bus,
+            "tool_call_end",
+            {"id": str(row.id), "name": name, "status": "failed", "error": row.error},
         )
         return ToolMessage(
             content=f"工具 {name} 执行失败: {row.error}", tool_call_id=call_id, status="error"

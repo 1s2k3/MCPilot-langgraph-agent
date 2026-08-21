@@ -21,8 +21,8 @@ services:
     container_name: agent-platform-mcp-demo
     environment:
       MCP_DEMO_PORT: "8001"
-    expose:
-      - "8001"
+    ports:
+      - "8001:8001"
 
   api:
     build: ./backend
@@ -63,6 +63,39 @@ services:
     depends_on:
       api:
         condition: service_started
+
+  # LangGraph Studio 交互式调试（图结构 / Time Travel / 热重载）
+  # 浏览器打开: https://smith.langchain.com/studio/?baseUrl=http://localhost:${LANGGRAPH_STUDIO_PORT:-2024}
+  # 默认不随 `docker compose up` 启动；用 `docker compose --profile studio up` 按需拉起
+  studio:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.studio
+    container_name: agent-platform-studio
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent_platform?connect_timeout=3
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-agent-platform}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
+      SCRIPTED_LLM: ${SCRIPTED_LLM:-false}
+      # 容器内连演示 MCP：studio.py 的 setdefault 被此 env 覆盖（localhost → mcp-demo）
+      MCP_DEMO_URL: http://mcp-demo:8001/mcp
+    ports:
+      - "${LANGGRAPH_STUDIO_PORT:-2024}:2024"
+    volumes:
+      # 让 .env 的改动免重建生效；pydantic Settings env_file 会读取 /app/.env
+      - ./.env:/app/.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp-demo:
+        condition: service_started
+    profiles: ["studio"]
 
 volumes:
   pgdata:

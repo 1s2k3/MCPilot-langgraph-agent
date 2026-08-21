@@ -50,11 +50,22 @@ async def _wait_eval_done(client: AsyncClient, eval_run_id: str, timeout_s: floa
     raise AssertionError(f"评估未在 {timeout_s}s 内完成")
 
 
+async def _cleanup_residuals(client: AsyncClient) -> None:
+    """幂等：上次中断/失败运行的残留同名资源先清掉（agent 与数据集）。"""
+    for d in (await client.get("/api/eval/datasets")).json()["datasets"]:
+        if d["name"] == _DATASET["name"]:
+            await client.delete(f"/api/eval/datasets/{d['id']}")
+    for a in (await client.get("/api/agents")).json():
+        if a["name"] == "评估目标 Agent":
+            await client.delete(f"/api/agents/{a['id']}")
+
+
 async def test_eval_pipeline(db_available) -> None:
     from app.main import app
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _cleanup_residuals(client)
         resp = await client.post("/api/agents", json={"name": "评估目标 Agent"})
         agent_id = resp.json()["id"]
 

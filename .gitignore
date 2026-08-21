@@ -26,3 +26,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# LangGraph CLI cache
+.langgraph_api/

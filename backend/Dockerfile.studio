@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 层序优化与生产 Dockerfile 一致：依赖安装 + embedding 预热只依赖 pyproject + memory/core，
+# 后续 app 代码变更不会重新下载模型（层缓存命中）
+COPY pyproject.toml ./
+COPY app/memory ./app/memory
+COPY app/core ./app/core
+# 安装应用 + studio extra（langgraph-cli[inmem]）
+RUN pip install --no-cache-dir -e ".[studio]"
+RUN python -c "from app.memory.embedder import embed; embed(['warmup'])"
+
+COPY app ./app
+COPY langgraph.json ./
+
+EXPOSE 2024
+# langgraph dev：内存 Checkpointer 的 Studio 兼容 HTTP 服务
+# 新版 langgraph-cli 已无 --no-docker（默认内存 store，不再拉起内部 compose）
+# --no-reload：容器为预构建镜像，关闭文件监听/热重载
+# --host 0.0.0.0：容器外可访问；浏览器经 baseUrl=http://localhost:<port> 连接
+CMD ["langgraph", "dev", "--host", "0.0.0.0", "--port", "2024", "--no-browser", "--no-reload"]
