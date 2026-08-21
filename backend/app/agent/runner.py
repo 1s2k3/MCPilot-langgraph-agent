@@ -149,7 +149,11 @@ async def _fail_run(
 async def _post_run_memory_extraction(
     run_id: uuid.UUID, thread_id: uuid.UUID, llm, user_input: str, answer: str
 ) -> None:
-    """运行结束后的异步长期记忆提取（best-effort，不发布事件、不影响 run 状态）。"""
+    """运行结束后的异步长期记忆提取（best-effort，不发布事件、不影响 run 状态）。
+
+    竞态防护：在写入前检查 thread 是否存在；存在性检查与写入之间 thread 被删
+    时，_upsert 的 IntegrityError 会被捕获为警告，不会让 run 失败。
+    """
     try:
         from app.db.models import Thread
         from app.db.session import SessionLocal
@@ -161,6 +165,7 @@ async def _post_run_memory_extraction(
                     "thread_deleted_skipping_memory_extraction", thread_id=str(thread_id)
                 )
                 return
+
         conversation = f"用户: {user_input}\n助手: {answer[:2000]}"
         async with asyncio.timeout(30):
             written = await store_extracted_memories(thread_id, run_id, llm, conversation)
@@ -230,6 +235,7 @@ async def execute_run(
             # HITL 循环：interrupt 挂起 → 等待 resume → Command(resume=...) 继续
             # LangGraph 1.x：interrupt 以 __interrupt__ 更新项流式返回（不抛异常）
             stream_input: object = {"messages": [HumanMessage(content=user_input)]}
+            last_payload: dict = {}
             while True:
                 interrupted_value = None
                 async with asyncio.timeout(s.run_timeout_seconds):
@@ -244,11 +250,12 @@ async def execute_run(
                             inter = raw[0] if isinstance(raw, (tuple, list)) else raw
                             interrupted_value = inter.value if hasattr(inter, "value") else inter
                             continue
-                        for node_name, values in payload.items():
+                        for node_name, node_values in payload.items():
+                            last_payload = node_values
                             await bus.publish(
                                 bus.next_event(
                                     "state_snapshot",
-                                    {"node": node_name, "state": sanitize_state(values)},
+                                    {"node": node_name, "state": sanitize_state(node_values)},
                                 )
                             )
                 if interrupted_value is None:
@@ -272,8 +279,16 @@ async def execute_run(
                 )
                 stream_input = Command(resume=decision)
 
-            final_state = await graph.aget_state(config)
-            values = final_state.values or {}
+            final_state = None
+            if checkpointer is not None:
+                try:
+                    final_state = await graph.aget_state(config)
+                except ValueError:
+                    pass  # 无 checkpointer 时 aget_state 不可用
+            if final_state is not None:
+                values = final_state.values or {}
+            else:
+                values = last_payload
             answer = values.get("final_answer")
             if not answer:
                 msgs = values.get("messages") or []
