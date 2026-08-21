@@ -9,7 +9,7 @@ from typing import Literal
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import IntegrityError, select
 
 from app.core.logging import get_logger
 from app.db.models import Memory
@@ -66,7 +66,7 @@ async def store_single_memory(
 
 
 async def store_extracted_memories(
-    thread_id: uuid.UUID, source_run_id: uuid.UUID, llm, conversation: str
+    thread_id: uuid.UUID | None, source_run_id: uuid.UUID | None, llm, conversation: str
 ) -> int:
     """提取 + 批量落库。返回新增条数。"""
     items = await extract_memories(llm, conversation)
@@ -75,8 +75,17 @@ async def store_extracted_memories(
     written = 0
     async with SessionLocal() as session:
         for item in items:
-            written += await _upsert(session, thread_id, source_run_id, item)
-        await session.commit()
+            try:
+                written += await _upsert(session, thread_id, source_run_id, item)
+            except Exception:  # noqa: BLE001
+                logger.warning("memory_upsert_failed", content=item.content[:50])
+                await session.rollback()
+        try:
+            await session.commit()
+        except IntegrityError:
+            logger.warning("memory_commit_fk_violation")
+            await session.rollback()
+            return 0
     return written
 
 
@@ -96,15 +105,25 @@ async def _upsert(session, thread_id, source_run_id, item: MemoryItem) -> int:
         existing.importance = max(existing.importance, item.importance)
         existing.type = item.type
         return 0
-    emb = await aembed([item.content])
-    session.add(
-        Memory(
-            thread_id=thread_id,
-            source_run_id=source_run_id,
-            type=item.type,
-            content=item.content,
-            importance=item.importance,
-            embedding=emb[0] if emb else None,
+    try:
+        emb = await aembed([item.content])
+    except Exception:  # noqa: BLE001
+        logger.warning("embed_failed_skipping_memory", content=item.content[:50])
+        return 0
+    try:
+        session.add(
+            Memory(
+                thread_id=thread_id,
+                source_run_id=source_run_id,
+                type=item.type,
+                content=item.content,
+                importance=item.importance,
+                embedding=emb[0] if emb else None,
+            )
         )
-    )
+        await session.flush()
+    except IntegrityError:
+        logger.warning("memory_fk_violation_skipped", thread_id=str(thread_id), source_run_id=str(source_run_id))
+        await session.rollback()
+        return 0
     return 1

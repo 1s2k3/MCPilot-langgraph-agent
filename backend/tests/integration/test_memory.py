@@ -83,13 +83,10 @@ async def test_extraction_with_dedupe(db_available) -> None:
     item = MemoryExtraction(
         memories=[MemoryItem(type="fact", content="用户的名字是小明", importance=0.8)]
     )
-    llm = ScriptedChatModel(responses=[item, item])  # 两次提取返回相同内容 → 去重
-    thread_id = uuid.uuid4()
-    run_id = uuid.uuid4()
-    written = await store_extracted_memories(thread_id, run_id, llm, "用户: 我叫小明")
+    llm = ScriptedChatModel(responses=[item, item])
+    written = await store_extracted_memories(None, None, llm, "用户: 我叫小明")
     assert written == 1
-    # 相同内容二次提取 → 去重合并，不新增
-    written2 = await store_extracted_memories(thread_id, run_id, llm, "用户: 我叫小明")
+    written2 = await store_extracted_memories(None, None, llm, "用户: 我叫小明")
     assert written2 == 0
 
 

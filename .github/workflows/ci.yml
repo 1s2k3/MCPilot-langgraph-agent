@@ -48,6 +48,7 @@ jobs:
       SCRIPTED_LLM: "true"
       ALLOW_PRIVATE_MCP_URLS: "true"
       EMBEDDING_CACHE_DIR: ~/.cache/fastembed
+      SEED_DEMO_MCP: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
