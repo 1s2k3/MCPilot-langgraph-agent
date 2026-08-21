@@ -2,7 +2,6 @@
 
 import asyncio
 import time
-import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient

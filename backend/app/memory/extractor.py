@@ -9,7 +9,8 @@ from typing import Literal
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
-from sqlalchemy import IntegrityError, select
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.logging import get_logger
 from app.db.models import Memory
@@ -123,7 +124,11 @@ async def _upsert(session, thread_id, source_run_id, item: MemoryItem) -> int:
         )
         await session.flush()
     except IntegrityError:
-        logger.warning("memory_fk_violation_skipped", thread_id=str(thread_id), source_run_id=str(source_run_id))
+        logger.warning(
+            "memory_fk_violation_skipped",
+            thread_id=str(thread_id),
+            source_run_id=str(source_run_id),
+        )
         await session.rollback()
         return 0
     return 1
