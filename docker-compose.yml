@@ -29,7 +29,10 @@ services:
     container_name: agent-platform-api
     environment:
       DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent_platform
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
       APP_MASTER_KEY: ${APP_MASTER_KEY:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2:-false}

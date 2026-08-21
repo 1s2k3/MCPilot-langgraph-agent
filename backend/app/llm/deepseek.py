@@ -32,5 +32,12 @@ def build_deepseek_model(cfg: LLMConfig, api_key: str | None = None) -> ChatOpen
 
 
 def structured(model, schema):
-    """DeepSeek 结构化输出：function_calling 方法（兼容性最好）。"""
-    return model.with_structured_output(schema, method="function_calling")
+    """DeepSeek 结构化输出：function_calling + tool_choice="auto"。
+
+    deepseek-v4-flash 默认 thinking 模式，实测限制（2026-08 验证）：
+    - 拒绝强制 tool_choice（对象形式，如 {"type":"function",...}）→ 400
+    - 拒绝 response_format（json_object / json_schema）→ 400
+    - 接受普通工具调用（tool_choice="auto" 或不设置）
+    因此不强制模型调用工具：依赖调用方 prompt 强约束，解析失败由调用方兜底重试。
+    """
+    return model.with_structured_output(schema, method="function_calling", tool_choice="auto")

@@ -25,7 +25,7 @@ from langchain_core.messages import (
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.agent.schemas import Plan, ReflectionVerdict
+from app.agent.schemas import Plan, PlanStep, ReflectionVerdict
 from app.agent.state import AgentState
 from app.core.errors import AppError
 from app.events.bus import EventBus
@@ -187,7 +187,24 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             context["近期反思"] = reflection[-3:]
         msgs.append(HumanMessage(content=json.dumps(context, ensure_ascii=False, default=str)))
 
-        out = await _structured(ctx.llms["planner"], Plan).ainvoke(msgs)
+        try:
+            out = await _structured(ctx.llms["planner"], Plan).ainvoke(msgs)
+        except Exception:  # noqa: BLE001
+            # 兜底：DeepSeek thinking 模式下不强制 tool_choice，模型可能直接回答
+            # 而非调用 Plan 工具 → 重试一次；仍失败则回退默认单步计划（不中断任务）
+            try:
+                out = await _structured(ctx.llms["planner"], Plan).ainvoke(msgs)
+            except Exception:  # noqa: BLE001
+                out = Plan(
+                    steps=[
+                        PlanStep(
+                            id=str(uuid.uuid4())[:8],
+                            goal=_latest_user_text(state) or "完成任务",
+                            tools_hint=[],
+                        )
+                    ],
+                    rationale="规划器结构化输出失败，回退为默认单步计划",
+                )
         steps = [
             s.model_dump() | {"status": "pending", "attempts": 0, "feedback": []}
             for s in out.steps[:max_plan_steps]
@@ -361,9 +378,15 @@ def build_graph(ctx: GraphContext, checkpointer=None):
             ensure_ascii=False,
             default=str,
         )
-        verdict = await _structured(ctx.llms["reflector"], ReflectionVerdict).ainvoke(
-            [SystemMessage(content=_REFLECT_PROMPT), HumanMessage(content=evidence)]
-        )
+        try:
+            verdict = await _structured(ctx.llms["reflector"], ReflectionVerdict).ainvoke(
+                [SystemMessage(content=_REFLECT_PROMPT), HumanMessage(content=evidence)]
+            )
+        except Exception:  # noqa: BLE001
+            # best-effort：反思失败降级为 pass（不阻塞执行，回退进 finalizer）
+            verdict = ReflectionVerdict(
+                verdict="pass", reason="反思评审失败，自动通过", feedback=""
+            )
         entry = {
             "step_id": step["id"],
             "step_index": idx,

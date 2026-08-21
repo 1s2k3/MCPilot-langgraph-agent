@@ -25,9 +25,13 @@ def test_resolve_llm_config_defaults_per_provider(monkeypatch) -> None:
         assert cfg.model == "deepseek-v4-flash"
     finally:
         _restore(monkeypatch)
-    # 默认 anthropic
-    cfg = resolve_llm_config("executor", None)
-    assert cfg.model == "claude-opus-5"
+    # anthropic 分支（环境变量优先于 .env 文件，显式声明）
+    _with_env(monkeypatch, LLM_PROVIDER="anthropic", DEEPSEEK_API_KEY="")
+    try:
+        cfg = resolve_llm_config("executor", None)
+        assert cfg.model == "claude-opus-5"
+    finally:
+        _restore(monkeypatch)
 
 
 def test_build_deepseek_model_no_network(monkeypatch) -> None:
@@ -61,7 +65,13 @@ async def test_build_node_llms_deepseek_without_key_falls_back_scripted(monkeypa
     from app.agent.runner import build_node_llms
     from app.db.models import Agent
 
-    _with_env(monkeypatch, LLM_PROVIDER="deepseek")
+    # 空串显式覆盖 .env 中可能存在的真实 key（环境变量优先于 .env 文件）
+    _with_env(monkeypatch, LLM_PROVIDER="deepseek", DEEPSEEK_API_KEY="")
+    # DB 兜底 key 也置空（本地开发库可能存有真实 deepseek key）
+    async def _no_db_key(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.agent.runner.get_provider_key", _no_db_key)
     try:
         llms, structured_fn = await build_node_llms(Agent(name="t"))
         assert "ScriptedChatModel" in type(llms["executor"]).__name__
