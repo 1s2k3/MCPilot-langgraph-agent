@@ -18,7 +18,7 @@ from app.core.logging import get_logger  # noqa: E402
 logger = get_logger(__name__)
 
 _checkpointer: AsyncPostgresSaver | None = None
-_cm = None  # 保持引用以便关闭时 __aexit__
+_cm = None
 _lock = asyncio.Lock()
 
 
@@ -38,17 +38,30 @@ async def get_checkpointer() -> AsyncPostgresSaver | None:
     async with _lock:
         if _checkpointer is not None:
             return _checkpointer
-        try:
-            cm = AsyncPostgresSaver.from_conn_string(_conn_string())
-            saver = await cm.__aenter__()
-            await saver.setup()  # 建表/迁移（checkpoints / checkpoint_blobs / checkpoint_writes）
-        except Exception:  # noqa: BLE001
-            logger.warning("checkpointer_init_failed_checkpoint_disabled")
-            return None
-        _cm = cm
-        _checkpointer = saver
-        logger.info("checkpointer_ready")
-    return _checkpointer
+        conn_str = _conn_string()
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                cm = AsyncPostgresSaver.from_conn_string(conn_str)
+                saver = await cm.__aenter__()
+                await saver.setup()
+                _cm = cm
+                _checkpointer = saver
+                logger.info("checkpointer_ready", attempt=attempt)
+                return _checkpointer
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                logger.warning(
+                    "checkpointer_init_retry",
+                    attempt=attempt,
+                    error=str(exc)[:200],
+                )
+                await asyncio.sleep(1 + attempt)
+        logger.warning(
+            "checkpointer_init_failed_checkpoint_disabled",
+            error=str(last_err)[:200] if last_err else "unknown",
+        )
+        return None
 
 
 async def close_checkpointer() -> None:

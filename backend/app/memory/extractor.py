@@ -61,9 +61,14 @@ async def store_single_memory(
 ) -> int:
     """写入单条记忆（去重 upsert + embedding）。返回新增条数（0=已存在合并）。"""
     async with SessionLocal() as session:
-        written = await _upsert(session, thread_id, source_run_id, item)
-        await session.commit()
-        return written
+        try:
+            written = await _upsert(session, thread_id, source_run_id, item)
+            await session.commit()
+            return written
+        except Exception:  # noqa: BLE001
+            logger.warning("store_single_memory_failed", content=item.content[:50])
+            await session.rollback()
+            return 0
 
 
 async def store_extracted_memories(

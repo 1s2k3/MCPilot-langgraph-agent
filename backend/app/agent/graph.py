@@ -323,21 +323,21 @@ def build_graph(ctx: GraphContext, checkpointer=None):
         denied_feedback = ""
         if pending:
             if checkpointer is None:
-                # interrupt 依赖 checkpoint 持久化；不可用时明确失败而非静默拒绝
-                raise AppError(
-                    "checkpoint_required",
-                    "工具审批（ask 策略）需要 checkpoint 持久化，当前数据库不可用",
-                    retryable=False,
+                logger.warning(
+                    "checkpoint_unavailable_denying_ask_tools",
+                    tools=[p["name"] for p in pending],
                 )
-            # HITL：挂起等待人工决议（resume API → Command(resume=...)）
-            decision = interrupt({"pending": pending}) or {}
-            if decision.get("action") == "approve":
-                if decision.get("session_wide"):
-                    for item in pending:
-                        approvals[item["name"]] = "allow"
-            else:
                 denied_ids = {item["id"] for item in pending}
-                denied_feedback = decision.get("feedback") or ""
+                denied_feedback = "checkpoint 不可用，工具审批降级为拒绝"
+            else:
+                decision = interrupt({"pending": pending}) or {}
+                if decision.get("action") == "approve":
+                    if decision.get("session_wide"):
+                        for item in pending:
+                            approvals[item["name"]] = "allow"
+                else:
+                    denied_ids = {item["id"] for item in pending}
+                    denied_feedback = decision.get("feedback") or ""
 
         results_by_id: dict[str, ToolMessage] = {}
         for tc in calls:

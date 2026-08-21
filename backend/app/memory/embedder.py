@@ -14,24 +14,36 @@ logger = get_logger(__name__)
 
 _embedder = None
 _lock = threading.Lock()
+_init_error = False
 
 
 def get_embedder():
     """懒加载模型（首次调用下载/加载约数秒）。disabled → None。"""
-    global _embedder
+    global _embedder, _init_error
     s = get_settings()
     if s.embedding_provider == "disabled":
         return None
-    if _embedder is None:
-        with _lock:
-            if _embedder is None:
-                from fastembed import TextEmbedding
+    if _init_error:
+        return None
+    if _embedder is not None:
+        return _embedder
+    with _lock:
+        if _embedder is not None:
+            return _embedder
+        if _init_error:
+            return None
+        try:
+            from fastembed import TextEmbedding
 
-                kwargs = {"model_name": s.embedding_model}
-                if s.embedding_cache_dir:
-                    kwargs["cache_dir"] = s.embedding_cache_dir
-                _embedder = TextEmbedding(**kwargs)
-                logger.info("embedder_loaded", model=s.embedding_model)
+            kwargs = {"model_name": s.embedding_model}
+            if s.embedding_cache_dir:
+                kwargs["cache_dir"] = s.embedding_cache_dir
+            _embedder = TextEmbedding(**kwargs)
+            logger.info("embedder_loaded", model=s.embedding_model)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("embedder_init_failed", error=str(exc)[:200])
+            _init_error = True
+            return None
     return _embedder
 
 

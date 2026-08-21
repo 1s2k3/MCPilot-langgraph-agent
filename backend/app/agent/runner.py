@@ -287,6 +287,7 @@ async def execute_run(
                     },
                 )
             )
+
             # 异步长期记忆提取（不阻塞 run 收尾，异常隔离）
             def _memory_task_done(task: asyncio.Task) -> None:
                 try:
