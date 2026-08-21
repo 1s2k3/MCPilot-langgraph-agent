@@ -63,4 +63,5 @@ jobs:
       - run: pip install -e "backend[dev]"
       - run: cd mcp-demo && npm ci
       - run: cd backend && alembic upgrade head
+      - run: cd backend && python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2', cache_dir=os.path.expanduser('~/.cache/fastembed')); print('embedder ready')"
       - run: pytest backend/tests/integration -q
