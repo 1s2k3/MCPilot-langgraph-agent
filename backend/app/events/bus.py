@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 _SUBSCRIBER_MAX = 2048
 _FLUSH_TIMEOUT_S = 10
+# 关闭哨兵：放入持久化队列，写任务消费到即退出（保证哨兵前的事件全部落库）
+_SENTINEL = object()
 
 
 class EventBus:
@@ -69,6 +71,8 @@ class EventBus:
     async def _write_loop(self) -> None:
         while True:
             evt = await self._db_queue.get()
+            if evt is _SENTINEL:
+                return
             await self._persist_one(evt)
 
     async def _persist_one(self, evt: Event) -> None:
@@ -84,17 +88,22 @@ class EventBus:
             )
 
     async def close(self) -> None:
-        """关闭总线：冲刷剩余事件后停止写任务。"""
+        """关闭总线：哨兵唤醒写任务，等其按序写完队列中全部事件后退出。
+
+        避免旧实现的竞态：close 与写任务并发消费队列，写任务正写最后一个
+        事件（如 run_end）时 close 误判队列为空并 cancel 写任务 → 事件丢失。
+        """
         if self.closed:
             return
         self.closed = True
         if self.persist:
             try:
                 async with asyncio.timeout(_FLUSH_TIMEOUT_S):
-                    while not self._db_queue.empty():
-                        await self._persist_one(await self._db_queue.get())
+                    await self._db_queue.put(_SENTINEL)
+                    if self._writer is not None:
+                        await self._writer
             except TimeoutError:
                 logger.warning("event_flush_timeout", run_id=str(self.run_id))
-            if self._writer is not None:
-                self._writer.cancel()
+                if self._writer is not None:
+                    self._writer.cancel()
         self._subscribers.clear()

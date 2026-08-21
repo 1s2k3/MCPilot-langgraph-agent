@@ -1,6 +1,7 @@
 """Alembic 异步迁移环境：URL 来自应用配置（DATABASE_URL 环境变量 / .env）。"""
 
 import asyncio
+import sys
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -51,5 +52,8 @@ async def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif sys.platform == "win32":
+    # psycopg3 异步连接要求 Selector 事件循环（Windows 默认 Proactor 不支持）
+    asyncio.run(run_migrations_online(), loop_factory=asyncio.SelectorEventLoop)
 else:
     asyncio.run(run_migrations_online())

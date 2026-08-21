@@ -39,6 +39,11 @@ studio = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 共享资源（Postgres checkpointer 单例连接 / SQLAlchemy engine）跨测试复用，
+# 必须在同一事件循环内创建与使用；function scope 下连接随旧 loop 关闭而失效
+# （CI 报 psycopg.OperationalError: the connection is closed）
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
     "integration: 需要真实 PostgreSQL / MCP demo server（docker compose 或 CI 服务）",

@@ -176,7 +176,16 @@ def _step_goal_and_user_text(messages: list[BaseMessage]) -> str:
 
 
 def demo_responder(messages: list[BaseMessage]) -> list[Any]:
-    """离线演示 executor：计算→calculator；记住→remember_memory；其余直接完成步骤。"""
+    """离线演示 executor：计算→calculator；记住→remember_memory；其余直接完成步骤。
+
+    工具被拒绝（ToolMessage status=error，§5.9 deny）时改道：不再重复请求被拒工具，
+    直接结束本步骤（与真实 LLM 收到拒绝反馈后的行为一致）。
+    """
+    if any(
+        getattr(m, "type", None) == "tool" and getattr(m, "status", None) == "error"
+        for m in messages
+    ):
+        return [AIMessage(content="工具调用被拒绝，本步骤无法完成，直接结束本步骤。")]
     key = _step_goal_and_user_text(messages)
     if "确认" in key:
         return [AIMessage(content="已确认，结果正确。")]

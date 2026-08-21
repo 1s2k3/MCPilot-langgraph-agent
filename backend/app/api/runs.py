@@ -205,23 +205,23 @@ async def run_stream(
     async def _stream():
         last_seq = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
         seen: set[int] = set()
-        for evt in await manager.replay(run_id, last_seq):
-            if evt.seq <= last_seq:
-                continue
-            seen.add(evt.seq)
-            yield _sse_item(evt)
-
         bus = manager.existing_bus(run_id)
-        # run 已结束（bus 已清理）→ 纯回放；若回放后总线又清理，补一次回放兜底
+        # run 已结束（bus 已清理，事件已全部落库）→ 纯回放
         if bus is None or bus.closed:
-            for evt in await manager.replay(run_id, max(seen, default=last_seq)):
-                if evt.seq in seen:
+            for evt in await manager.replay(run_id, last_seq):
+                if evt.seq <= last_seq:
                     continue
-                seen.add(evt.seq)
                 yield _sse_item(evt)
             return
         q = bus.subscribe()
         try:
+            # 先订阅再回放：回放期间新发布的事件不会漏（进队列），
+            # 与回放重复的按 seq 去重 → 客户端收到的始终按 seq 升序
+            for evt in await manager.replay(run_id, last_seq):
+                if evt.seq <= last_seq:
+                    continue
+                seen.add(evt.seq)
+                yield _sse_item(evt)
             while True:
                 evt = await q.get()
                 if evt.seq in seen:

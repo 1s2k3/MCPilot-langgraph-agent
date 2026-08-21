@@ -60,10 +60,10 @@ async def test_hitl_deny_flow(db_available) -> None:
         assert interrupts, "应有 interrupt 事件"
         assert [p["name"] for p in interrupts[0]["payload"]["pending"]] == ["calculator"]
 
-        # 非 interrupted 状态 resume → 409
+        # deny：工具不执行（无 tool_call_start），agent 收到拒绝反馈后改道完成
         resp = await client.post(
             f"/api/threads/{thread_id}/runs/{run_id}/resume",
-            json={"action": "approve"},
+            json={"action": "deny", "feedback": "不要使用计算器"},
         )
         assert resp.status_code == 200, resp.text
 
