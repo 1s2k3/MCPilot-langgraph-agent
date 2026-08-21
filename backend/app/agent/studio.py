@@ -28,8 +28,7 @@ logger = get_logger(__name__)
 os.environ.setdefault("MCP_DEMO_URL", "http://localhost:8001/mcp")
 
 _SYSTEM_PROMPT = (
-    "你是一个通用助手。基于工具结果回答用户问题；"
-    "没有可用工具时如实说明能力边界，不要臆造结果。"
+    "你是一个通用助手。基于工具结果回答用户问题；没有可用工具时如实说明能力边界，不要臆造结果。"
 )
 
 

@@ -52,6 +52,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 ignore = ["B008"]  # FastAPI Depends 参数默认值
+exclude = ["alembic/versions"]
+
+[tool.ruff.format]
+exclude = ["alembic/versions"]
 
 [build-system]
 requires = ["setuptools>=75"]

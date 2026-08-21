@@ -1,12 +1,13 @@
 """Alembic 异步迁移环境：URL 来自应用配置（DATABASE_URL 环境变量 / .env）。"""
+
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from app.core.config import get_settings
 from app.db import models  # noqa: F401  # 注册所有表到 metadata
 from app.db.base import Base

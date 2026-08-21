@@ -67,6 +67,7 @@ async def test_build_node_llms_deepseek_without_key_falls_back_scripted(monkeypa
 
     # 空串显式覆盖 .env 中可能存在的真实 key（环境变量优先于 .env 文件）
     _with_env(monkeypatch, LLM_PROVIDER="deepseek", DEEPSEEK_API_KEY="")
+
     # DB 兜底 key 也置空（本地开发库可能存有真实 deepseek key）
     async def _no_db_key(*args, **kwargs) -> None:
         return None
